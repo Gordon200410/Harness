@@ -50,9 +50,9 @@ const inp="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-3 py-2 text
 const lbl="text-[11px] uppercase tracking-wider text-zinc-500";
 
 function App(){
-const [S,setS]=useState(load);const SR=useRef(S);SR.current=S;const tok=useRef(0);
+const [S,setS]=useState(load);const SR=useRef(S);SR.current=S;const tok=useRef(0);const simFlag=useRef(false);
 const [log,setLog]=useState([]);const [sess,setSess]=useState({role:"idle",tokens:0});
-const [busy,setBusy]=useState(false);const [tab,setTab]=useState("agents");const [view,setView]=useState("run");
+const [busy,setBusy]=useState(false);const [auto,setAuto]=useState(false);const [autoStep,setAutoStep]=useState("");const [tab,setTab]=useState("agents");const [view,setView]=useState("run");
 const [raw,setRaw]=useState("");const [req,setReq]=useState("做一個可離線使用的番茄鐘 PWA，含計時、統計、設定頁");
 const [right,setRight]=useState(false);const [modal,setModal]=useState(null);const [mtext,setMtext]=useState("");
 const [pv,setPv]=useState("Builder");const endRef=useRef(null);
@@ -78,7 +78,7 @@ function sim(role,prompt,why){
   return "VERDICT: PASS\n【模擬 QA】已對照 SPEC.md 與驗收條件：邊界值、空資料、持久化皆有處理。（"+(why||"模擬")+"）"}
 async function call(role,prompt){
   const c=SR.current.cfg,a=c.roles[role],p=c.providers;
-  L("Context Injected",role+" → "+a.provider+" / "+a.model);setSess(x=>({...x,role}));
+  L("Context Injected",role+" → "+a.provider+" / "+a.model);simFlag.current=false;setSess(x=>({...x,role}));
   const sys=SYS[role]+"\n\n"+ctxText(role);let out;
   try{
     if(a.provider==="gemini_api"){
@@ -92,36 +92,46 @@ async function call(role,prompt){
         if(a.provider==="subscription_bridge"&&q.sticky)h["X-Sticky-Session"]="1";
         const r=await post(q.url.replace(/\/$/,"")+"/chat/completions",{method:"POST",headers:h,body:JSON.stringify({model:a.model,messages:[{role:"system",content:sys},{role:"user",content:prompt}]})});
         const j=await r.json();if(!r.ok)throw new Error(JSON.stringify(j).slice(0,200));out=j.choices[0].message.content}}
-  }catch(e){L("Harness Gate Check","警告：API 呼叫失敗（"+e.message+"），改用模擬回退");await sleep(400);out=sim(role,prompt,"API 失敗回退")}
+  }catch(e){L("Harness Gate Check","警告：API 呼叫失敗（"+e.message+"），改用模擬回退");simFlag.current=true;await sleep(400);out=sim(role,prompt,"API 失敗回退")}
   tok.current=Math.round((sys.length+prompt.length+out.length)/4);setSess(x=>({...x,tokens:x.tokens+tok.current}));
   return out}
 
 async function runPlanner(){
-  if(busy)return;setBusy(true);setView("run");
+  if(busy)return false;let ok=false;setBusy(true);setView("run");
   try{const out=await call("Planner","需求：\n"+req+"\n請輸出 JSON 陣列。");L("Model Proposes",out);
     const m=out.match(/\[[\s\S]*\]/);const arr=JSON.parse(m?m[0]:out);const n=SR.current.features.length;
     setS(s=>({...s,files:{...s.files,spec:s.files.spec+"\n\n## 新需求\n"+req},features:[...s.features,...arr.map((x,i)=>({id:"F-"+String(n+i).padStart(3,"0"),title:x.title,acceptance:x.acceptance||"",status:"not_started",steps:0}))]}));
-    L("Harness Gate Check","通過：已加入 "+arr.length+" 張票，皆為 not_started（Planner 無權啟動）")}
+    L("Harness Gate Check","通過：已加入 "+arr.length+" 張票，皆為 not_started（Planner 無權啟動）");ok=true}
   catch(e){L("Harness Gate Check","拒絕：Planner 輸出無法解析為 JSON（"+e.message+"）")}
-  setBusy(false);setSess(x=>({...x,role:"idle"}))}
+  setBusy(false);setSess(x=>({...x,role:"idle"}));return ok}
 async function runBuilder(){
-  if(busy)return;setView("run");let f=SR.current.features.find(x=>x.status==="active");
-  if(!f){const n=SR.current.features.find(x=>x.status==="not_started");if(!n){L("Harness Gate Check","拒絕：沒有可領取的任務");return}if(!start(n.id))return;f=n}
-  if((f.steps||0)>=CAP){L("Harness Gate Check","熔斷：步數已達 "+CAP+"，請先交接");return}
+  if(busy)return false;setView("run");let f=SR.current.features.find(x=>x.status==="active");
+  if(!f){const n=SR.current.features.find(x=>x.status==="not_started");if(!n){L("Harness Gate Check","拒絕：沒有可領取的任務");return false}if(!start(n.id))return false;f=n}
+  if((f.steps||0)>=CAP){L("Harness Gate Check","熔斷：步數已達 "+CAP+"，請先交接");return false}
   setBusy(true);const t0=Date.now();
   const out=await call("Builder","請實作任務："+f.title+"\n驗收條件："+f.acceptance);L("Model Proposes",out);
   patch(f.id,{steps:(f.steps||0)+1,builderOut:out,evalReport:null,tokens:(f.tokens||0)+tok.current,ms:(f.ms||0)+Date.now()-t0});
-  L("Harness Gate Check","Builder 無權標記 passing，請交由 Evaluator 驗收");setBusy(false);setSess(x=>({...x,role:"idle"}))}
+  L("Harness Gate Check","Builder 無權標記 passing，請交由 Evaluator 驗收");setBusy(false);setSess(x=>({...x,role:"idle"}));return true}
 async function runEval(){
-  if(busy)return;setView("run");const f=SR.current.features.find(x=>x.status==="active");
-  if(!f||!f.builderOut){L("Harness Gate Check","拒絕：需要有 Builder 產出的 active 任務才能驗收");return}
-  if((f.steps||0)>=CAP){L("Harness Gate Check","熔斷：步數已達上限，請先交接");return}
+  if(busy)return false;setView("run");const f=SR.current.features.find(x=>x.status==="active");
+  if(!f||!f.builderOut){L("Harness Gate Check","拒絕：需要有 Builder 產出的 active 任務才能驗收");return false}
+  if((f.steps||0)>=CAP){L("Harness Gate Check","熔斷：步數已達上限，請先交接");return false}
   setBusy(true);const t0=Date.now();
   const out=await call("Evaluator","請嚴格驗收任務："+f.title+"\n驗收條件："+f.acceptance+"\n\nBuilder 產出：\n"+f.builderOut);
   L("QA Verification",out);const ev={steps:(f.steps||0)+1,evalReport:out,tokens:(f.tokens||0)+tok.current,ms:(f.ms||0)+Date.now()-t0};
-  if(/^\s*VERDICT:\s*PASS/i.test(out)){patch(f.id,{...ev,status:"passing"});addProgress("## "+new Date().toLocaleString()+"\n- "+f.id+" "+f.title+" → PASS（steps "+ev.steps+"）");L("Harness Gate Check","通過：Evaluator 回傳 PASS，任務轉為 passing 並追加 progress.md，WIP 鎖定解除")}
-  else{patch(f.id,ev);L("Harness Gate Check","拒絕：Evaluator 回傳 FAIL，維持 active，請再執行 Builder 修正")}
-  setBusy(false);setSess(x=>({...x,role:"idle"}))}
+  const pass=/^\s*VERDICT:\s*PASS/i.test(out);const okp=pass&&!simFlag.current;if(okp){patch(f.id,{...ev,status:"passing"});addProgress("## "+new Date().toLocaleString()+"\n- "+f.id+" "+f.title+" → PASS（steps "+ev.steps+"）");L("Harness Gate Check","通過：Evaluator 回傳 PASS，任務轉為 passing 並追加 progress.md，WIP 鎖定解除")}
+  else{patch(f.id,ev);L("Harness Gate Check",pass?"拒絕：驗收階段 API 失敗，結果為模擬回退，不得放行，維持 active。請檢查 API 後重新驗收":"拒絕：Evaluator 回傳 FAIL，維持 active，請再執行 Builder 修正")}
+  setBusy(false);setSess(x=>({...x,role:"idle"}));return okp}
+async function runAll(){
+  if(busy||auto)return;setAuto(true);setView("run");
+  L("Harness Gate Check","一鍵流程開始：Planner → Builder → Evaluator");
+  let ok=true;
+  if(SR.current.features.some(f=>f.status==="active"))L("Harness Gate Check","略過 Planner：已有 active 任務，直接接續 Builder");
+  else{setAutoStep("Planner");ok=await runPlanner();await sleep(150)}
+  if(ok){setAutoStep("Builder");ok=await runBuilder();await sleep(150)}
+  if(ok){setAutoStep("Evaluator");const r=await runEval();L("Harness Gate Check",r?"一鍵流程完成：任務已通過驗收":"一鍵流程停止：驗收未通過，請查看 QA 報告，修正後再按 2 與 3")}
+  else L("Harness Gate Check","一鍵流程中止：前一步未成功");
+  setAuto(false)}
 function handoff(){
   const a=SR.current.features.find(f=>f.status==="active");
   addProgress("## 交接 "+new Date().toLocaleString()+"\n- Active："+(a?a.id+" "+a.title+"（steps "+(a.steps||0)+"）":"無")+"\n- 本 Session 估算 tokens："+sess.tokens+"\n- 最後事件："+(log.slice(-2).map(x=>x.tag).join(" → ")||"無")+"\n- 下一步："+(a?"繼續 Builder／Evaluator":"領取下一張票"));
@@ -148,7 +158,7 @@ const pct=Math.min(100,((act&&act.steps||0)/CAP)*100);
 const stage=!act?-1:!act.builderOut?0:!act.evalReport?1:2;
 const fail=stage===2;
 const roleName=sess.role==="idle"?"Idle":sess.role==="Evaluator"?"Evaluator · Skeptical":sess.role;
-const Btn=({n,t,s,c,fn})=><button disabled={busy} onClick={fn} className={"text-left rounded-xl px-3 py-2.5 border border-[#27272a] bg-[#111113] active:bg-[#18181b] disabled:opacity-40 "}><div className="flex items-center gap-2"><span className={"mono text-[11px] w-5 h-5 rounded-md flex items-center justify-center "+c}>{n}</span><span className="text-[13px] font-medium">{t}</span></div><div className="text-[11px] text-zinc-500 mt-0.5 pl-7 truncate">{s}</div></button>;
+const Btn=({n,t,s,c,fn})=><button disabled={busy||auto} onClick={fn} className={"text-left rounded-xl px-3 py-2.5 border border-[#27272a] bg-[#111113] active:bg-[#18181b] disabled:opacity-40 "}><div className="flex items-center gap-2"><span className={"mono text-[11px] w-5 h-5 rounded-md flex items-center justify-center "+c}>{n}</span><span className="text-[13px] font-medium">{t}</span></div><div className="text-[11px] text-zinc-500 mt-0.5 pl-7 truncate">{s}</div></button>;
 const Seg=({k,t})=><button onClick={()=>setView(k)} className={"px-4 py-1.5 rounded-md text-[13px] "+(view===k?"bg-[#27272a] text-zinc-100":"text-zinc-400")}>{t}</button>;
 const fcard=f=><div key={f.id} className={card+" p-3 space-y-2"}>
   <div className="flex items-center gap-2"><span className={"w-1.5 h-1.5 rounded-full "+DOT[f.status]}/><span className="mono text-[11px] text-zinc-400">{f.id}</span></div>
@@ -193,7 +203,7 @@ return <div className="h-full relative flex text-[13px]">
   {tab==="feature_list"?<textarea value={raw} onChange={e=>setRaw(e.target.value)} className={inp+" flex-1 mono text-[12px] leading-relaxed"}/>:<textarea value={S.files[tab]} onChange={e=>setFiles(tab,e.target.value)} className={inp+" flex-1 mono text-[12px] leading-relaxed"}/>}</div>}
  </div>
  <footer className="p-3 border-t border-[#1f1f23] space-y-2">
-  <input value={req} onChange={e=>setReq(e.target.value)} className={inp} placeholder="輸入需求（給 Planner）"/>
+  <div className="flex gap-2"><input value={req} onChange={e=>setReq(e.target.value)} className={inp} placeholder="輸入需求（給 Planner）"/><button disabled={busy||auto} onClick={runAll} className="shrink-0 pl-4 pr-5 py-2.5 rounded-xl text-white font-medium disabled:opacity-70 flex items-center gap-2.5 border border-indigo-300/30 active:scale-[0.98] transition" style={{background:"linear-gradient(180deg,#6366f1,#4f46e5)",boxShadow:"0 8px 24px -10px rgba(99,102,241,.7), inset 0 1px 0 rgba(255,255,255,.18)"}}>{auto?<span className="w-2 h-2 rounded-full bg-white animate-pulse"/>:<svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1.2v9.6L10.8 6z" fill="currentColor"/></svg>}<span className="whitespace-nowrap">{auto?"執行中 · "+autoStep:"任務開始"}</span></button></div>
   <div className="grid grid-cols-4 gap-2">
    <Btn n="1" t="Planner" s="拆解需求至 feature_list" c="bg-violet-500/20 text-violet-300" fn={runPlanner}/>
    <Btn n="2" t="Builder" s="領取並執行唯一 Active 任務" c="bg-indigo-500/20 text-indigo-300" fn={runBuilder}/>
