@@ -137,6 +137,13 @@ function doExport(){setMtext(JSON.stringify({files:S.files,features:S.features,c
 function doImport(){try{const j=JSON.parse(mtext);if(!j.files||!Array.isArray(j.features))throw new Error("格式不符");if(j.features.filter(f=>f.status==="active").length>1)throw new Error("違反 WIP=1");
   setS(s=>({files:j.files,features:j.features,cfg:j.cfg?{...j.cfg,providers:{...j.cfg.providers,gemini:s.cfg.providers.gemini}}:s.cfg}));setModal(null);L("Harness Gate Check","通過：已匯入狀態")}catch(e){alert("匯入失敗："+e.message)}}
 
+const outText=f=>"# "+f.id+" "+f.title+"\n\n驗收條件："+f.acceptance+"\n\n## Builder 產出\n\n"+f.builderOut+(f.evalReport?"\n\n## QA 報告\n\n"+f.evalReport:"")+"\n";
+async function copyOut(f){
+  try{await navigator.clipboard.writeText(outText(f));L("Harness Gate Check","通過：已複製 "+f.id+" 的產出到剪貼簿")}
+  catch(e){setMtext(outText(f));setModal("export");L("Harness Gate Check","警告：無法直接寫入剪貼簿，已開啟視窗，請手動全選複製")}}
+function dlOut(f){
+  try{const u=URL.createObjectURL(new Blob([outText(f)],{type:"text/markdown;charset=utf-8"}));const a=document.createElement("a");a.href=u;a.download=f.id+".md";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1500);L("Harness Gate Check","通過：已下載 "+f.id+".md")}
+  catch(e){setMtext(outText(f));setModal("export");L("Harness Gate Check","警告：無法下載，已開啟視窗，請手動複製")}}
 const pct=Math.min(100,((act&&act.steps||0)/CAP)*100);
 const stage=!act?-1:!act.builderOut?0:!act.evalReport?1:2;
 const fail=stage===2;
@@ -151,7 +158,8 @@ const fcard=f=><div key={f.id} className={card+" p-3 space-y-2"}>
   <div className="flex gap-2">
    {f.status==="not_started"&&<button disabled={!!act} onClick={()=>start(f.id)} className="px-3 py-1.5 rounded-lg text-[12px] bg-indigo-500 text-white disabled:bg-[#18181b] disabled:text-zinc-600">{act?"WIP 鎖定":"啟動"}</button>}
    {(f.status==="active"||f.status==="not_started")&&<button onClick={()=>patch(f.id,{status:"blocked"})} className="px-3 py-1.5 rounded-lg text-[12px] border border-[#27272a] text-zinc-300">封鎖</button>}
-   {f.status==="blocked"&&<button onClick={()=>patch(f.id,{status:"not_started"})} className="px-3 py-1.5 rounded-lg text-[12px] border border-[#27272a] text-zinc-300">解除封鎖</button>}</div></div>;
+   {f.status==="blocked"&&<button onClick={()=>patch(f.id,{status:"not_started"})} className="px-3 py-1.5 rounded-lg text-[12px] border border-[#27272a] text-zinc-300">解除封鎖</button>}</div>
+  {f.builderOut&&<div className="flex gap-2"><button onClick={()=>copyOut(f)} className="px-3 py-1.5 rounded-lg text-[12px] border border-[#27272a] text-zinc-300">複製產出</button><button onClick={()=>dlOut(f)} className="px-3 py-1.5 rounded-lg text-[12px] border border-[#27272a] text-zinc-300">下載成檔案</button></div>}</div>;
 
 return <div className="h-full relative flex text-[13px]">
 <aside className="w-48 shrink-0 border-r border-[#1f1f23] flex flex-col bg-[#0c0c0e]">
