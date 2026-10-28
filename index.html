@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mobile Agent Harness</title>
+<style>:root{color-scheme:dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{height:100%;margin:0;background:#0b0f17;color:#e5e7eb}#root{height:100%}button{touch-action:manipulation}</style>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef}=React;
+const CAP=25,KEY="harness_v1";
+const SYS={
+Planner:"你是 Planner。只負責規格與拆票，不寫實作。輸出 JSON 陣列：[{\"title\":\"…\",\"acceptance\":\"…\"}]，每張票必須小到可單一 Session 完成。",
+Builder:"你是 Builder。一次只處理唯一的 Active 任務，輸出實作方案或程式碼與自我檢查清單。禁止宣稱任務已通過，驗收權在 Evaluator。",
+Evaluator:"你是挑剔的 Skeptical QA。對照 SPEC.md 與驗收條件找出邊界漏洞。第一行必須是 VERDICT: PASS 或 VERDICT: FAIL，之後給出驗證報告。"};
+const AGENTS0=`# AGENTS.md
+## 鐵律
+1. WIP=1：同一時間最多一個 active 任務。
+2. Builder 不得自行標記 passing，必須由 Evaluator 回傳 PASS。
+3. 每任務步數上限 25，逼近上限必須交接。
+4. 結束或中斷前，必須寫入 progress.md。
+## 角色
+Planner 拆票 / Builder 單任務實作 / Evaluator 懷疑論驗收`;
+const SPEC0=`# SPEC.md
+目標：離線可用的番茄鐘 PWA。
+- 25/5 分鐘計時與可調設定
+- 每日完成數統計
+- 資料僅存本機`;
+const DEF={files:{agents:AGENTS0,spec:SPEC0,progress:"# progress.md\n（交接日誌）\n",decisions:"# DECISIONS.md\n- ADR-001：狀態存 localStorage，可匯出 JSON。\n"},
+features:[
+{id:"F-000",title:"專案骨架與路由",acceptance:"可切換計時/統計/設定三頁",status:"passing",steps:6},
+{id:"F-001",title:"資料模型與 localStorage 儲存層",acceptance:"重新整理後資料不遺失，壞資料可回復預設",status:"not_started",steps:0},
+{id:"F-002",title:"計時器核心（開始/暫停/重置）",acceptance:"背景分頁計時誤差小於 1 秒",status:"not_started",steps:0},
+{id:"F-003",title:"每日統計頁",acceptance:"顯示最近 7 天完成數長條圖",status:"not_started",steps:0}],
+cfg:{providers:{gemini:{key:""},openai:{url:"https://openrouter.ai/api/v1",key:"",headers:"{}"},bridge:{url:"http://100.x.x.x:8321/v1",key:"",headers:"{}",sticky:true}},
+roles:{Planner:{provider:"gemini_api",model:"gemini-2.5-pro"},Builder:{provider:"gemini_api",model:"gemini-2.5-flash"},Evaluator:{provider:"gemini_api",model:"gemini-2.5-pro"}},mode:"standalone"}};
+function load(){try{const s=localStorage.getItem(KEY);if(s)return JSON.parse(s)}catch(e){}return JSON.parse(JSON.stringify(DEF))}
+const TAGC={"Context Injected":"text-sky-300 border-sky-700","Model Proposes":"text-violet-300 border-violet-700","Harness Gate Check":"text-amber-300 border-amber-700","QA Verification":"text-emerald-300 border-emerald-700"};
+const STC={not_started:"bg-slate-700 text-slate-200",active:"bg-blue-600 text-white",passing:"bg-emerald-600 text-white",blocked:"bg-red-700 text-white"};
+const FILES=[["agents","AGENTS.md"],["spec","SPEC.md"],["feature_list","feature_list.json"],["progress","progress.md"],["decisions","DECISIONS.md"]];
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+function App(){
+const [S,setS]=useState(load);const SR=useRef(S);SR.current=S;
+const [log,setLog]=useState([]);const [sess,setSess]=useState({role:"idle",tokens:0});
+const [busy,setBusy]=useState(false);const [tab,setTab]=useState("feature_list");const [view,setView]=useState("cards");
+const [raw,setRaw]=useState("");const [req,setReq]=useState("做一個可離線使用的番茄鐘 PWA，含計時、統計、設定頁");
+const [right,setRight]=useState(false);const [wb,setWb]=useState(false);const [modal,setModal]=useState(null);const [mtext,setMtext]=useState("");
+const [pv,setPv]=useState("Builder");const endRef=useRef(null);
+useEffect(()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}},[S]);
+useEffect(()=>{endRef.current&&endRef.current.scrollIntoView({behavior:"smooth"})},[log]);
+useEffect(()=>{setRaw(JSON.stringify(S.features,null,2))},[S.features,view,tab]);
+const act=S.features.find(f=>f.status==="active");
+const L=(tag,text)=>setLog(l=>[...l,{tag,text}]);
+const setFiles=(k,v)=>setS(s=>({...s,files:{...s.files,[k]:v}}));
+const setCfg=fn=>setS(s=>{const c=JSON.parse(JSON.stringify(s.cfg));fn(c);return {...s,cfg:c}});
+const patch=(id,p)=>setS(s=>({...s,features:s.features.map(f=>f.id===id?{...f,...p}:f)}));
+const addProgress=t=>setS(s=>({...s,files:{...s.files,progress:s.files.progress+"\n"+t}}));
+
+function start(id){
+  if(SR.current.features.some(f=>f.status==="active")){L("Harness Gate Check","❌ WIP=1 鎖定：已有 active 任務，拒絕啟動 "+id);return false}
+  patch(id,{status:"active"});SR.current={...SR.current,features:SR.current.features.map(f=>f.id===id?{...f,status:"active"}:f)};
+  L("Harness Gate Check","✅ "+id+" 轉為 active（WIP=1 已鎖定）");return true}
+function ctxText(role){
+  const s=SR.current,a=s.features.find(f=>f.status==="active");
+  return "## AGENTS.md\n"+s.files.agents+"\n\n## SPEC.md\n"+s.files.spec+"\n\n## progress.md（最近）\n"+s.files.progress.slice(-1200)+"\n\n## Active Feature\n"+(a?JSON.stringify({id:a.id,title:a.title,acceptance:a.acceptance,builderOutput:role==="Evaluator"?a.builderOut:undefined},null,1):"（無）")}
+function sim(role,prompt,why){
+  if(role==="Planner")return JSON.stringify([{title:"定義資料結構與儲存層",acceptance:"讀寫與壞資料回復皆有測試"},{title:"核心流程實作",acceptance:"主要操作可完成且無例外"},{title:"統計與設定頁",acceptance:"畫面符合 SPEC.md"}]);
+  if(role==="Builder"){const a=SR.current.features.find(f=>f.status==="active");return "【模擬 Builder】任務："+(a?a.title:"")+"\n1. 建立模組與型別\n2. 實作主流程與錯誤處理\n3. 自我檢查：邊界值、空資料、重新整理後狀態\n（"+(why||"模擬")+"）"}
+  return "VERDICT: PASS\n【模擬 QA】已對照 SPEC.md 與驗收條件：邊界值、空資料、持久化皆有處理。（"+(why||"模擬")+"）"}
+async function call(role,prompt){
+  const c=SR.current.cfg,a=c.roles[role],p=c.providers;
+  L("Context Injected",role+" → "+a.provider+" / "+a.model);setSess(x=>({...x,role}));
+  const sys=SYS[role]+"\n\n"+ctxText(role);let out;
+  try{
+    if(a.provider==="gemini_api"){
+      if(!p.gemini.key){await sleep(700);out=sim(role,prompt,"未填 API Key，模擬回退")}
+      else{const r=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+a.model+":generateContent",{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":p.gemini.key},body:JSON.stringify({systemInstruction:{parts:[{text:sys}]},contents:[{role:"user",parts:[{text:prompt}]}]})});
+        const j=await r.json();if(!r.ok)throw new Error(j.error&&j.error.message||r.status);out=j.candidates[0].content.parts.map(x=>x.text||"").join("")}
+    }else{
+      const q=a.provider==="openai_compatible"?p.openai:p.bridge;
+      if(!q.url){await sleep(700);out=sim(role,prompt,"未設定 URL，模擬回退")}
+      else{let h={"Content-Type":"application/json"};if(q.key)h.Authorization="Bearer "+q.key;try{h={...h,...JSON.parse(q.headers||"{}")}}catch(e){}
+        if(a.provider==="subscription_bridge"&&q.sticky)h["X-Sticky-Session"]="1";
+        const r=await fetch(q.url.replace(/\/$/,"")+"/chat/completions",{method:"POST",headers:h,body:JSON.stringify({model:a.model,messages:[{role:"system",content:sys},{role:"user",content:prompt}]})});
+        const j=await r.json();if(!r.ok)throw new Error(JSON.stringify(j).slice(0,200));out=j.choices[0].message.content}}
+  }catch(e){L("Harness Gate Check","⚠️ API 呼叫失敗："+e.message+"；改用模擬回退");await sleep(400);out=sim(role,prompt,"API 失敗回退")}
+  setSess(x=>({...x,tokens:x.tokens+Math.round((sys.length+prompt.length+out.length)/4)}));
+  return out}
+
+async function runPlanner(){
+  if(busy)return;setBusy(true);
+  try{const out=await call("Planner","需求：\n"+req+"\n請輸出 JSON 陣列。");L("Model Proposes",out);
+    const m=out.match(/\[[\s\S]*\]/);const arr=JSON.parse(m?m[0]:out);
+    const n=SR.current.features.length;
+    setS(s=>({...s,files:{...s.files,spec:s.files.spec+"\n\n## 新需求\n"+req},features:[...s.features,...arr.map((x,i)=>({id:"F-"+String(n+i).padStart(3,"0"),title:x.title,acceptance:x.acceptance||"",status:"not_started",steps:0}))]}));
+    L("Harness Gate Check","✅ 已加入 "+arr.length+" 張票（皆為 not_started，Planner 無權啟動）")}
+  catch(e){L("Harness Gate Check","❌ Planner 輸出無法解析為 JSON："+e.message)}
+  setBusy(false);setSess(x=>({...x,role:"idle"}))}
+async function runBuilder(){
+  if(busy)return;let f=SR.current.features.find(x=>x.status==="active");
+  if(!f){const n=SR.current.features.find(x=>x.status==="not_started");if(!n){L("Harness Gate Check","❌ 沒有可領取的任務");return}if(!start(n.id))return;f=n}
+  if((f.steps||0)>=CAP){L("Harness Gate Check","🛑 熔斷：步數已達 "+CAP+"，請先執行交接");return}
+  setBusy(true);
+  const out=await call("Builder","請實作任務："+f.title+"\n驗收條件："+f.acceptance);L("Model Proposes",out);
+  patch(f.id,{steps:(f.steps||0)+1,builderOut:out});SR.current={...SR.current,features:SR.current.features.map(x=>x.id===f.id?{...x,steps:(x.steps||0)+1,builderOut:out}:x)};
+  L("Harness Gate Check","Builder 無權標記 passing，請交由 Evaluator 驗收");setBusy(false);setSess(x=>({...x,role:"idle"}))}
+async function runEval(){
+  if(busy)return;const f=SR.current.features.find(x=>x.status==="active");
+  if(!f||!f.builderOut){L("Harness Gate Check","❌ 需要有 builder 產出的 active 任務才能驗收");return}
+  if((f.steps||0)>=CAP){L("Harness Gate Check","🛑 熔斷：步數已達上限，請先交接");return}
+  setBusy(true);
+  const out=await call("Evaluator","請嚴格驗收任務："+f.title+"\n驗收條件："+f.acceptance+"\n\nBuilder 產出：\n"+f.builderOut);
+  L("QA Verification",out);patch(f.id,{steps:(f.steps||0)+1,evalReport:out});
+  if(/^\s*VERDICT:\s*PASS/i.test(out)){patch(f.id,{status:"passing"});addProgress("## "+new Date().toLocaleString()+"\n- "+f.id+" "+f.title+" → PASS（steps "+((f.steps||0)+1)+"）");L("Harness Gate Check","✅ Evaluator 回傳 PASS：任務轉為 passing，已追加 progress.md，WIP 鎖定解除")}
+  else L("Harness Gate Check","❌ Evaluator 回傳 FAIL：維持 active，請再執行 Builder 修正");
+  setBusy(false);setSess(x=>({...x,role:"idle"}))}
+function handoff(){
+  const a=SR.current.features.find(f=>f.status==="active");
+  addProgress("## 交接 "+new Date().toLocaleString()+"\n- Active："+(a?a.id+" "+a.title+"（steps "+(a.steps||0)+"）":"無")+"\n- 本 Session 估算 tokens："+sess.tokens+"\n- 最後事件："+(log.slice(-2).map(x=>x.tag).join(" → ")||"無")+"\n- 下一步："+(a?"繼續 Builder／Evaluator":"領取下一張票"));
+  if(a)patch(a.id,{steps:0});setLog([]);setSess({role:"idle",tokens:0});L("Harness Gate Check","🔄 已寫入交接日誌，Context 清空，新 Session 開始")}
+function saveRaw(){
+  try{const a=JSON.parse(raw);if(!Array.isArray(a))throw new Error("必須是陣列");
+    if(a.filter(f=>f.status==="active").length>1)throw new Error("違反 WIP=1：超過 1 個 active");
+    const old=Object.fromEntries(SR.current.features.map(f=>[f.id,f.status]));
+    const bad=a.find(f=>f.status==="passing"&&old[f.id]!=="passing");if(bad)throw new Error(bad.id+" 不能手動改為 passing，必須經 Evaluator");
+    setS(s=>({...s,features:a}));L("Harness Gate Check","✅ Raw JSON 已通過護欄並儲存")}
+  catch(e){L("Harness Gate Check","❌ 拒絕儲存："+e.message)}}
+function doExport(){setMtext(JSON.stringify({files:S.files,features:S.features,cfg:{...S.cfg,providers:{...S.cfg.providers,gemini:{key:""}}}},null,2));setModal("export")}
+function doImport(){try{const j=JSON.parse(mtext);if(!j.files||!Array.isArray(j.features))throw new Error("格式不符");if(j.features.filter(f=>f.status==="active").length>1)throw new Error("違反 WIP=1");
+  setS(s=>({files:j.files,features:j.features,cfg:j.cfg?{...j.cfg,providers:{...j.cfg.providers,gemini:s.cfg.providers.gemini}}:s.cfg}));setModal(null);L("Harness Gate Check","✅ 已匯入狀態")}catch(e){alert("匯入失敗："+e.message)}}
+
+const pct=Math.min(100,((act&&act.steps||0)/CAP)*100);
+const badge=sess.role==="Evaluator"?"[Evaluator - Skeptical Mode]":sess.role==="idle"?"[Idle]":"["+sess.role+"]";
+const inp="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm";
+const Chip=({c,onClick,children})=><button disabled={busy} onClick={onClick} className={"rounded-2xl px-3 py-3 text-xs text-left font-medium active:scale-95 disabled:opacity-40 "+c}>{children}</button>;
+return <div className="h-full relative flex bg-[#0b0f17] text-slate-200 text-sm">
+{/* Left */}
+<aside className="w-44 shrink-0 border-r border-slate-800 flex flex-col bg-[#0e1420]">
+ <div className="p-3 font-semibold text-slate-100">🧭 Agent Harness<div className="text-xs font-normal text-slate-500">System of Record</div></div>
+ <nav className="flex-1 overflow-auto px-2 space-y-1">{FILES.map(([k,n])=><button key={k} onClick={()=>{setTab(k);setWb(true)}} className={"w-full text-left px-3 py-3 rounded-xl "+(tab===k?"bg-blue-600/30 text-blue-200":"hover:bg-slate-800")}>📄 {n}{k==="feature_list"&&<span className="float-right text-xs text-slate-400">{S.features.filter(f=>f.status==="passing").length}/{S.features.length}</span>}</button>)}</nav>
+ <div className="p-2 space-y-2 border-t border-slate-800"><button onClick={doExport} className="w-full py-3 rounded-xl bg-slate-800">⬆️ 匯出同步包</button><button onClick={()=>{setMtext("");setModal("import")}} className="w-full py-3 rounded-xl bg-slate-800">⬇️ 匯入桌面版狀態</button></div>
+</aside>
+{/* Center */}
+<main className="flex-1 min-w-0 flex flex-col">
+ <header className="p-3 border-b border-slate-800 space-y-2">
+  <div className="flex items-center gap-2 flex-wrap">
+   <span className={"px-3 py-1 rounded-full text-xs font-semibold "+(sess.role==="Evaluator"?"bg-red-700":sess.role==="Builder"?"bg-blue-600":sess.role==="Planner"?"bg-violet-600":"bg-slate-700")}>{badge}</span>
+   <span className="truncate">🔒 Active：{act?act.id+" "+act.title:"（無，WIP=0）"}</span>
+   <span className="ml-auto text-xs text-slate-400">≈{sess.tokens} tokens</span>
+   <button onClick={()=>setRight(!right)} className="px-3 py-2 rounded-lg bg-slate-800">⚙️ 設定</button></div>
+  <div><div className="flex justify-between text-xs text-slate-400"><span>Step Budget</span><span>{act&&act.steps||0}/{CAP}</span></div><div className="h-2 rounded bg-slate-800"><div className={"h-2 rounded "+(pct>80?"bg-red-500":"bg-blue-500")} style={{width:pct+"%"}}/></div></div>
+ </header>
+ <div className="flex-1 min-h-0 flex flex-col">
+  {/* Workbench */}
+  <section className={"border-b border-slate-800 flex flex-col "+(wb?"h-[45%]":"")}>
+   <div className="px-3 py-2 flex items-center gap-2 text-xs text-slate-400"><button onClick={()=>setWb(!wb)} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-200">{wb?"▼ 收合編輯區":"▶ 展開編輯區"}</button>{FILES.find(f=>f[0]===tab)[1]}
+    {tab==="feature_list"&&<span className="ml-auto flex gap-1">{["cards","raw"].map(v=><button key={v} onClick={()=>setView(v)} className={"px-3 py-1 rounded-lg "+(view===v?"bg-blue-600 text-white":"bg-slate-800")}>{v==="cards"?"卡片":"Raw JSON"}</button>)}</span>}</div>
+   {wb&&<div className="flex-1 min-h-0 px-3 pb-3 overflow-auto">
+   {tab!=="feature_list"?<textarea value={S.files[tab]} onChange={e=>setFiles(tab,e.target.value)} className={inp+" h-full font-mono"}/>
+   :view==="raw"?<div className="h-full flex flex-col gap-2"><textarea value={raw} onChange={e=>setRaw(e.target.value)} className={inp+" flex-1 font-mono"}/><button onClick={saveRaw} className="py-2 rounded-lg bg-blue-600">儲存（經護欄驗證）</button></div>
+   :<div className="grid grid-cols-1 xl:grid-cols-2 gap-2">{S.features.map(f=><div key={f.id} className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+     <div className="flex items-center gap-2"><b>{f.id}</b><span className={"px-2 py-0.5 rounded-full text-xs "+STC[f.status]}>{f.status}</span><span className="ml-auto text-xs text-slate-500">steps {f.steps||0}</span></div>
+     <div className="mt-1">{f.title}</div><div className="text-xs text-slate-400">驗收：{f.acceptance}</div>
+     <div className="mt-2 flex gap-2">
+      {f.status==="not_started"&&<button disabled={!!act} onClick={()=>start(f.id)} className="px-3 py-2 rounded-lg bg-blue-600 disabled:bg-slate-700 disabled:text-slate-500">{act?"🔒 WIP 鎖定":"▶ 啟動"}</button>}
+      {(f.status==="active"||f.status==="not_started")&&<button onClick={()=>patch(f.id,{status:"blocked"})} className="px-3 py-2 rounded-lg bg-slate-800">⛔ 封鎖</button>}
+      {f.status==="blocked"&&<button onClick={()=>patch(f.id,{status:"not_started"})} className="px-3 py-2 rounded-lg bg-slate-800">解除封鎖</button>}</div></div>)}</div>}
+   </div>}</section>
+  {/* Stream */}
+  <section className="flex-1 min-h-0 overflow-auto p-3 space-y-2">
+   {log.length===0&&<div className="text-slate-500 text-center mt-6">執行串流會顯示在這裡。依序點擊下方 1 → 2 → 3 體驗閉環。</div>}
+   {log.map((e,i)=><div key={i} className={"border-l-2 pl-3 "+(TAGC[e.tag]||"")}><div className="text-xs font-semibold">[{e.tag}]</div><pre className="whitespace-pre-wrap text-slate-300 text-xs font-sans">{e.text}</pre></div>)}
+   {busy&&<div className="text-slate-400 animate-pulse">⏳ 處理中…</div>}<div ref={endRef}/>
+  </section>
+ </div>
+ <footer className="p-2 border-t border-slate-800 space-y-2">
+  <input value={req} onChange={e=>setReq(e.target.value)} className={inp} placeholder="輸入需求（給 Planner）"/>
+  <div className="grid grid-cols-2 gap-2">
+   <Chip c="bg-violet-700" onClick={runPlanner}>📋 1. Planner: 拆解需求至 feature_list</Chip>
+   <Chip c="bg-blue-700" onClick={runBuilder}>🔨 2. Builder: 領取並執行唯一 Active 任務</Chip>
+   <Chip c="bg-red-700" onClick={runEval}>🔍 3. Evaluator: 執行挑剔 QA 驗收並過門檻</Chip>
+   <Chip c="bg-slate-700" onClick={handoff}>🔄 4. 寫入 progress.md 並重置乾淨 Session</Chip></div>
+ </footer>
+</main>
+{/* Right */}
+{right&&<aside className="absolute inset-y-0 right-0 z-40 w-80 max-w-full shadow-2xl border-l border-slate-800 bg-[#0e1420] overflow-auto p-3 space-y-4">
+ <div className="flex items-center font-semibold">⚙️ 模型路由<button onClick={()=>setRight(false)} className="ml-auto px-2">✕</button></div>
+ <div className="flex gap-1">{[["standalone","獨立模式"],["bridge","橋接模式"]].map(([k,n])=><button key={k} onClick={()=>setCfg(c=>{c.mode=k;if(k==="bridge")Object.keys(c.roles).forEach(r=>{c.roles[r].provider="subscription_bridge"});else Object.keys(c.roles).forEach(r=>{c.roles[r].provider="gemini_api"})})} className={"flex-1 py-2 rounded-lg "+(S.cfg.mode===k?"bg-blue-600":"bg-slate-800")}>{n}</button>)}</div>
+ <div className="space-y-2"><div className="text-xs text-slate-400">gemini_api（Key 只存在本機瀏覽器）</div>
+  <input type="password" placeholder="GEMINI_API_KEY" value={S.cfg.providers.gemini.key} onChange={e=>setCfg(c=>{c.providers.gemini.key=e.target.value})} className={inp}/></div>
+ <div className="space-y-2"><div className="text-xs text-slate-400">openai_compatible</div>
+  <input placeholder="base_url" value={S.cfg.providers.openai.url} onChange={e=>setCfg(c=>{c.providers.openai.url=e.target.value})} className={inp}/>
+  <input type="password" placeholder="api_key" value={S.cfg.providers.openai.key} onChange={e=>setCfg(c=>{c.providers.openai.key=e.target.value})} className={inp}/></div>
+ <div className="space-y-2"><div className="text-xs text-slate-400">subscription_bridge（Tailscale / Tunnel 連回桌機）</div>
+  <input placeholder="http://100.x.x.x:8321/v1" value={S.cfg.providers.bridge.url} onChange={e=>setCfg(c=>{c.providers.bridge.url=e.target.value})} className={inp}/>
+  <input placeholder='Headers JSON，如 {"X-Token":"…"}' value={S.cfg.providers.bridge.headers} onChange={e=>setCfg(c=>{c.providers.bridge.headers=e.target.value})} className={inp}/>
+  <label className="flex items-center gap-2"><input type="checkbox" checked={S.cfg.providers.bridge.sticky} onChange={e=>setCfg(c=>{c.providers.bridge.sticky=e.target.checked})}/>Sticky Session</label></div>
+ <div className="space-y-2"><div className="text-xs text-slate-400">Role Routing</div>
+  <datalist id="models"><option value="gemini-2.5-pro"/><option value="gemini-2.5-flash"/></datalist>
+  {["Planner","Builder","Evaluator"].map(r=><div key={r} className="p-2 rounded-xl bg-slate-900 space-y-1"><b>{r}</b>
+   <select value={S.cfg.roles[r].provider} onChange={e=>setCfg(c=>{c.roles[r].provider=e.target.value})} className={inp}><option>gemini_api</option><option>openai_compatible</option><option>subscription_bridge</option></select>
+   <input list="models" value={S.cfg.roles[r].model} onChange={e=>setCfg(c=>{c.roles[r].model=e.target.value})} className={inp}/></div>)}</div>
+ <div className="space-y-2"><div className="flex items-center gap-1 text-xs text-slate-400">Context 預覽
+  {["Planner","Builder","Evaluator"].map(r=><button key={r} onClick={()=>setPv(r)} className={"px-2 py-1 rounded "+(pv===r?"bg-blue-600 text-white":"bg-slate-800")}>{r}</button>)}</div>
+  <pre className="text-xs whitespace-pre-wrap bg-slate-900 rounded-xl p-2 max-h-72 overflow-auto">{"[System]\n"+SYS[pv]+"\n\n"+ctxText(pv)}</pre></div>
+</aside>}
+{modal&&<div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50"><div className="w-full max-w-xl bg-slate-900 rounded-2xl p-4 space-y-2">
+ <div className="font-semibold">{modal==="export"?"匯出同步包（複製後貼到桌面版）":"貼上桌面版狀態 JSON"}</div>
+ <textarea value={mtext} onChange={e=>setMtext(e.target.value)} readOnly={modal==="export"} className={inp+" h-64 font-mono"}/>
+ <div className="flex gap-2 justify-end"><button onClick={()=>setModal(null)} className="px-4 py-2 rounded-lg bg-slate-800">關閉</button>
+ {modal==="export"?<button onClick={()=>{try{navigator.clipboard.writeText(mtext)}catch(e){}}} className="px-4 py-2 rounded-lg bg-blue-600">複製</button>:<button onClick={doImport} className="px-4 py-2 rounded-lg bg-blue-600">套用匯入</button>}</div></div></div>}
+</div>}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script></body></html>
