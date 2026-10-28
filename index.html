@@ -112,7 +112,8 @@ async function runBuilder(){
   if(!f){const n=SR.current.features.find(x=>x.status==="not_started");if(!n){L("Harness Gate Check","拒絕：沒有可領取的任務");return false}if(!start(n.id))return false;f=n}
   if((f.steps||0)>=CAP){L("Harness Gate Check","熔斷：步數已達 "+CAP+"，請先交接");return false}
   setBusy(true);const t0=Date.now();
-  const out=await call("Builder","請實作任務："+f.title+"\n驗收條件："+f.acceptance);L("Model Proposes",out);
+  const rev=f.evalReport&&f.builderOut;
+  const out=await call("Builder",(rev?"請根據 QA 報告修正任務：":"請實作任務：")+f.title+"\n驗收條件："+f.acceptance+(rev?"\n\n你上一版的產出：\n"+f.builderOut+"\n\nQA 報告（未通過）：\n"+f.evalReport+"\n\n請逐條修正上述問題，輸出完整的修正後版本。":""));L("Model Proposes",out);
   patch(f.id,{steps:(f.steps||0)+1,builderOut:out,evalReport:null,tokens:(f.tokens||0)+tok.current,ms:(f.ms||0)+Date.now()-t0});
   L("Harness Gate Check","Builder 無權標記 passing，請交由 Evaluator 驗收");setBusy(false);setSess(x=>({...x,role:"idle"}));return true}
 async function runEval(){
