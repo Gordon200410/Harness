@@ -84,7 +84,12 @@ async function call(role,prompt){
         const mk=t=>({method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":p.gemini.key},body:JSON.stringify({systemInstruction:{parts:[{text:sys}]},contents:[{role:"user",parts:[{text:prompt}]}],...(t?{generationConfig:{thinkingConfig:t}}:{})})});
         let r=await post(u,mk(tc));
         let j=await r.json();if(!r.ok&&tc&&/think|budget|level/i.test(JSON.stringify(j))){L("Harness Gate Check","警告：此模型不支援所選思考程度，改用預設再試一次");r=await post(u,mk(null));j=await r.json()}
-        if(!r.ok)throw new Error(j.error&&j.error.message||r.status);out=j.candidates[0].content.parts.map(x=>x.text||"").join("")}
+        if(!r.ok)throw new Error(j.error&&j.error.message||r.status);const pick=jj=>{const c=jj.candidates&&jj.candidates[0];return {t:c&&c.content&&c.content.parts?c.content.parts.map(x=>x.text||"").join(""):"",why:(c&&c.finishReason)||(jj.promptFeedback&&jj.promptFeedback.blockReason)||"未知"}};
+        let g=pick(j);
+        if(!g.t.trim()){L("Harness Gate Check","警告：模型回傳空內容（"+g.why+"），提高輸出上限並降低思考後重試一次");
+          const r2=await post(u,{...mk(null),body:JSON.stringify({systemInstruction:{parts:[{text:sys}]},contents:[{role:"user",parts:[{text:prompt}]}],generationConfig:{maxOutputTokens:16384,thinkingConfig:thinkCfg(a.model,"low")}})});
+          g=pick(await r2.json())}
+        out=g.t}
     }else{
       const q=a.provider==="openai_compatible"?p.openai:p.bridge;
       if(!q.url){await sleep(700);out=sim(role,prompt,"未設定 URL，模擬回退")}
@@ -113,7 +118,8 @@ async function runBuilder(){
   if((f.steps||0)>=CAP){L("Harness Gate Check","熔斷：步數已達 "+CAP+"，請先交接");return false}
   setBusy(true);const t0=Date.now();
   const rev=f.evalReport&&f.builderOut;
-  const out=await call("Builder",(rev?"請根據 QA 報告修正任務：":"請實作任務：")+f.title+"\n驗收條件："+f.acceptance+(rev?"\n\n你上一版的產出：\n"+f.builderOut+"\n\nQA 報告（未通過）：\n"+f.evalReport+"\n\n請逐條修正上述問題，輸出完整的修正後版本。":""));L("Model Proposes",out);
+  const out=await call("Builder",(rev?"請根據 QA 報告修正任務：":"請實作任務：")+f.title+"\n驗收條件："+f.acceptance+(rev?"\n\n你上一版的產出：\n"+f.builderOut+"\n\nQA 報告（未通過）：\n"+f.evalReport+"\n\n請逐條修正上述問題，輸出完整的修正後版本。":""));if(!out||!out.trim()){L("Harness Gate Check","拒絕：Builder 回傳空內容，未計入步數。可能是模型過載或思考用盡輸出額度，請重試，或到設定調低 Builder 的思考程度");setBusy(false);setSess(x=>({...x,role:"idle"}));return false}
+  L("Model Proposes",out);
   patch(f.id,{steps:(f.steps||0)+1,builderOut:out,evalReport:null,tokens:(f.tokens||0)+tok.current,ms:(f.ms||0)+Date.now()-t0});
   L("Harness Gate Check","Builder 無權標記 passing，請交由 Evaluator 驗收");setBusy(false);setSess(x=>({...x,role:"idle"}));return true}
 async function runEval(){
@@ -122,6 +128,7 @@ async function runEval(){
   if((f.steps||0)>=CAP){L("Harness Gate Check","熔斷：步數已達上限，請先交接");return false}
   setBusy(true);const t0=Date.now();
   const out=await call("Evaluator","請嚴格驗收任務："+f.title+"\n驗收條件："+f.acceptance+"\n\nBuilder 產出：\n"+f.builderOut);
+  if(!out||!out.trim()){L("Harness Gate Check","拒絕：Evaluator 回傳空內容，未形成驗收結論，請重試");setBusy(false);setSess(x=>({...x,role:"idle"}));return false}
   L("QA Verification",out);const ev={steps:(f.steps||0)+1,evalReport:out,tokens:(f.tokens||0)+tok.current,ms:(f.ms||0)+Date.now()-t0};
   const pass=/^\s*VERDICT:\s*PASS/i.test(out);const okp=pass&&!simFlag.current;if(okp){patch(f.id,{...ev,status:"passing"});addProgress("## "+new Date().toLocaleString()+"\n- "+f.id+" "+f.title+" → PASS（steps "+ev.steps+"）");L("Harness Gate Check","通過：Evaluator 回傳 PASS，任務轉為 passing 並追加 progress.md，WIP 鎖定解除")}
   else{patch(f.id,ev);L("Harness Gate Check",pass?"拒絕：驗收階段 API 失敗，結果為模擬回退，不得放行，維持 active。請檢查 API 後重新驗收":"拒絕：Evaluator 回傳 FAIL，維持 active，請再執行 Builder 修正")}
