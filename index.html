@@ -25,16 +25,9 @@ const AGENTS0=`# AGENTS.md
 ## 角色
 Planner 拆票 / Builder 單任務實作 / Evaluator 懷疑論驗收`;
 const SPEC0=`# SPEC.md
-目標：離線可用的番茄鐘 PWA。
-- 25/5 分鐘計時與可調設定
-- 每日完成數統計
-- 資料僅存本機`;
+（尚未定義。在下方輸入需求交給 Planner 拆票，或直接在這裡編輯。）`;
 const DEF={files:{agents:AGENTS0,spec:SPEC0,progress:"# progress.md\n（交接日誌）\n",decisions:"# DECISIONS.md\n- ADR-001：狀態存 localStorage，可匯出 JSON。\n"},
-features:[
-{id:"F-000",title:"專案骨架與路由",acceptance:"可切換計時/統計/設定三頁",status:"passing",steps:6},
-{id:"F-001",title:"資料模型與 localStorage 儲存層",acceptance:"重新整理後資料不遺失，壞資料可回復預設",status:"not_started",steps:0},
-{id:"F-002",title:"計時器核心（開始/暫停/重置）",acceptance:"背景分頁計時誤差小於 1 秒",status:"not_started",steps:0},
-{id:"F-003",title:"每日統計頁",acceptance:"顯示最近 7 天完成數長條圖",status:"not_started",steps:0}],
+features:[],
 cfg:{providers:{gemini:{key:""},openai:{url:"https://openrouter.ai/api/v1",key:"",headers:"{}"},bridge:{url:"http://100.x.x.x:8321/v1",key:"",headers:"{}",sticky:true}},
 roles:{Planner:{provider:"gemini_api",model:"gemini-2.5-pro"},Builder:{provider:"gemini_api",model:"gemini-2.5-flash"},Evaluator:{provider:"gemini_api",model:"gemini-2.5-pro"}},mode:"standalone"}};
 function load(){try{const s=localStorage.getItem(KEY);if(s)return JSON.parse(s)}catch(e){}return JSON.parse(JSON.stringify(DEF))}
@@ -53,7 +46,7 @@ function App(){
 const [S,setS]=useState(load);const SR=useRef(S);SR.current=S;const tok=useRef(0);const simFlag=useRef(false);
 const [log,setLog]=useState([]);const [sess,setSess]=useState({role:"idle",tokens:0});
 const [busy,setBusy]=useState(false);const [auto,setAuto]=useState(false);const [autoStep,setAutoStep]=useState("");const [tab,setTab]=useState("agents");const [view,setView]=useState("run");
-const [raw,setRaw]=useState("");const [req,setReq]=useState("做一個可離線使用的番茄鐘 PWA，含計時、統計、設定頁");
+const [raw,setRaw]=useState("");const [req,setReq]=useState("");
 const [right,setRight]=useState(false);const [modal,setModal]=useState(null);const [mtext,setMtext]=useState("");
 const [pv,setPv]=useState("Builder");const endRef=useRef(null);
 useEffect(()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}},[S]);
@@ -107,7 +100,7 @@ async function call(role,prompt){
   return out}
 
 async function runPlanner(){
-  if(busy)return false;let ok=false;setBusy(true);setView("run");
+  if(busy)return false;let ok=false;if(!req.trim()){setView("run");L("Harness Gate Check","拒絕：請先在輸入框填寫需求");return false}setBusy(true);setView("run");
   try{const out=await call("Planner","需求：\n"+req+"\n請輸出 JSON 陣列。");L("Model Proposes",out);
     const m=out.match(/\[[\s\S]*\]/);const arr=JSON.parse(m?m[0]:out);const n=SR.current.features.length;
     setS(s=>({...s,files:{...s.files,spec:s.files.spec+"\n\n## 新需求\n"+req},features:[...s.features,...arr.map((x,i)=>({id:"F-"+String(n+i).padStart(3,"0"),title:x.title,acceptance:x.acceptance||"",status:"not_started",steps:0}))]}));
@@ -153,6 +146,9 @@ function saveRaw(){
     const bad=a.find(f=>f.status==="passing"&&old[f.id]!=="passing");if(bad)throw new Error(bad.id+" 不能手動改為 passing，必須經 Evaluator");
     setS(s=>({...s,features:a}));L("Harness Gate Check","通過：Raw JSON 已通過護欄並儲存")}
   catch(e){L("Harness Gate Check","拒絕儲存："+e.message)}}
+function resetProject(){
+  if(!window.confirm("清空所有任務、規格與進度？API 設定會保留。"))return;
+  setS(s=>({...s,files:JSON.parse(JSON.stringify(DEF.files)),features:[]}));setLog([]);setSess({role:"idle",tokens:0})}
 function doExport(){setMtext(JSON.stringify({files:S.files,features:S.features,cfg:{...S.cfg,providers:{...S.cfg.providers,gemini:{key:""}}}},null,2));setModal("export")}
 function doImport(){try{const j=JSON.parse(mtext);if(!j.files||!Array.isArray(j.features))throw new Error("格式不符");if(j.features.filter(f=>f.status==="active").length>1)throw new Error("違反 WIP=1");
   setS(s=>({files:j.files,features:j.features,cfg:j.cfg?{...j.cfg,providers:{...j.cfg.providers,gemini:s.cfg.providers.gemini}}:s.cfg}));setModal(null);L("Harness Gate Check","通過：已匯入狀態")}catch(e){alert("匯入失敗："+e.message)}}
@@ -185,7 +181,7 @@ return <div className="h-full relative flex text-[13px]">
 <aside className="w-48 shrink-0 border-r border-[#1f1f23] flex flex-col bg-[#0c0c0e]">
  <div className="px-4 pt-4 pb-3"><div className="font-semibold tracking-tight text-[15px]">Harness</div><div className={lbl+" mt-0.5"}>System of record</div></div>
  <nav className="flex-1 overflow-auto px-2 space-y-0.5">{FILES.map(([k,n])=><button key={k} onClick={()=>{setTab(k);setView("files")}} className={"w-full text-left px-3 py-2.5 rounded-lg flex items-center "+(view==="files"&&tab===k?"bg-[#18181b] text-zinc-100":"text-zinc-400")}><span className="mono text-[12px] truncate">{n}</span>{k==="feature_list"&&<span className="ml-auto mono text-[11px] text-zinc-500">{S.features.filter(f=>f.status==="passing").length}/{S.features.length}</span>}</button>)}</nav>
- <div className="p-2 space-y-1.5 border-t border-[#1f1f23]"><button onClick={doExport} className="w-full py-2 rounded-lg border border-[#27272a] text-zinc-300">匯出同步包</button><button onClick={()=>{setMtext("");setModal("import")}} className="w-full py-2 rounded-lg border border-[#27272a] text-zinc-300">匯入桌面版狀態</button></div>
+ <div className="p-2 space-y-1.5 border-t border-[#1f1f23]"><button onClick={doExport} className="w-full py-2 rounded-lg border border-[#27272a] text-zinc-300">匯出同步包</button><button onClick={()=>{setMtext("");setModal("import")}} className="w-full py-2 rounded-lg border border-[#27272a] text-zinc-300">匯入桌面版狀態</button><button onClick={resetProject} className="w-full py-2 rounded-lg border border-[#27272a] text-rose-300">清空專案</button></div>
 </aside>
 <main className="flex-1 min-w-0 flex flex-col">
  <header className="px-4 py-3 border-b border-[#1f1f23] flex items-center gap-3">
