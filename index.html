@@ -74,8 +74,8 @@ function thinkCfg(model,lv){
   if(/gemini-2\.5/.test(model)){const m={minimal:/pro/.test(model)?128:0,low:1024,medium:8192,high:24576};return {thinkingBudget:m[lv]}}
   return {thinkingLevel:lv}}
 async function call(role,prompt){
-  const c=SR.current.cfg,a=c.roles[role],p=c.providers;const slot=a.keySlot==="2"?"2":"1",gk=(slot==="2"?p.gemini.key2:p.gemini.key)||"";
-  L("Context Injected",role+" → "+a.provider+" / "+a.model+(a.provider==="gemini_api"?" / Key "+(slot==="2"?"B":"A"):""));simFlag.current=false;setSess(x=>({...x,role}));
+  const c=SR.current.cfg,a=c.roles[role],p=c.providers;const slot=a.keySlot==="2"?"2":"1",rawk=(slot==="2"?p.gemini.key2:p.gemini.key)||"",gk=rawk.replace(/[^\x21-\x7E]/g,"");
+  L("Context Injected",role+" → "+a.provider+" / "+a.model+(a.provider==="gemini_api"?" / Key "+(slot==="2"?"B":"A"):""));simFlag.current=false;setSess(x=>({...x,role}));if(a.provider==="gemini_api"&&rawk&&rawk!==gk)L("Harness Gate Check","警告：Key 含空白、換行或非 ASCII 字元，已自動移除後再送出");
   const sys=SYS[role]+"\n\n"+ctxText(role);let out;
   try{
     if(a.provider==="gemini_api"){
@@ -100,7 +100,7 @@ async function call(role,prompt){
         let r=await post(u2,mk2(ef));
         let j=await r.json();if(!r.ok&&ef&&/reason|effort/i.test(JSON.stringify(j))){L("Harness Gate Check","警告：此端點不支援所選思考程度，改用預設再試一次");r=await post(u2,mk2(null));j=await r.json()}
         if(!r.ok)throw new Error(JSON.stringify(j).slice(0,200));out=j.choices[0].message.content}}
-  }catch(e){L("Harness Gate Check","警告：API 呼叫失敗（"+e.message+"），改用模擬回退");simFlag.current=true;await sleep(400);out=sim(role,prompt,"API 失敗回退")}
+  }catch(e){L("Harness Gate Check","警告：API 呼叫失敗（"+e.name+"："+e.message+"）"+(e.name==="TypeError"?"。請求沒有送達伺服器（沒收到任何回應），不是模型名稱或額度問題；請檢查網路、VPN、廣告／內容阻擋器、iCloud 私人轉送，或 Key 是否貼錯":"")+"，改用模擬回退");simFlag.current=true;await sleep(400);out=sim(role,prompt,"API 失敗回退")}
   tok.current=Math.round((sys.length+prompt.length+out.length)/4);setSess(x=>({...x,tokens:x.tokens+tok.current}));
   return out}
 
