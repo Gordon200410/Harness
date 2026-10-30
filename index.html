@@ -11,7 +11,7 @@
 </head><body><div id="root"></div>
 <script type="text/babel">
 const {useState,useEffect,useRef}=React;
-const CAP=25,KEY="harness_v1";const GM=["gemini-4-argon","gemini-3.8-flash","gemini-3.5-flash-lite"],GMAP={"gemini-2.5-pro":"gemini-4-argon","gemini-2.5-flash":"gemini-3.8-flash"};
+const CAP=25,KEY="harness_v1";const cleanCfg=c=>{try{Object.values(c.roles).forEach(r=>{if(r.provider==="subscription_bridge"){r.provider="gemini_api";if(!/^gemini/.test(r.model))r.model="gemini-3.8-flash"}});delete c.providers.bridge;delete c.mode}catch(e){}return c};const GM=["gemini-4-argon","gemini-3.8-flash","gemini-3.5-flash-lite"],GMAP={"gemini-2.5-pro":"gemini-4-argon","gemini-2.5-flash":"gemini-3.8-flash"};
 const SYS={
 Planner:"你是 Planner。只負責規格與拆票，不寫實作。輸出 JSON 陣列：[{\"title\":\"…\",\"acceptance\":\"…\"}]，每張票必須小到可單一 Session 完成。",
 Builder:"你是 Builder。一次只處理唯一的 Active 任務，輸出實作方案或程式碼與自我檢查清單。禁止宣稱任務已通過，驗收權在 Evaluator。",
@@ -28,9 +28,9 @@ const SPEC0=`# SPEC.md
 （尚未定義。在下方輸入需求交給 Planner 拆票，或直接在這裡編輯。）`;
 const DEF={files:{agents:AGENTS0,spec:SPEC0,progress:"# progress.md\n（交接日誌）\n",decisions:"# DECISIONS.md\n- ADR-001：狀態存 localStorage，可匯出 JSON。\n"},
 features:[],
-cfg:{providers:{gemini:{key:"",key2:""},openai:{url:"https://openrouter.ai/api/v1",key:"",headers:"{}"},bridge:{url:"http://100.x.x.x:8321/v1",key:"",headers:"{}",sticky:true}},
-roles:{Planner:{provider:"gemini_api",model:"gemini-4-argon"},Builder:{provider:"gemini_api",model:"gemini-3.8-flash",keySlot:"1"},Evaluator:{provider:"gemini_api",model:"gemini-4-argon"}},mode:"standalone"}};
-function load(){try{const s=localStorage.getItem(KEY);if(s){const j=JSON.parse(s);try{Object.values(j.cfg.roles).forEach(r=>{if(r.provider==="gemini_api"&&GMAP[r.model])r.model=GMAP[r.model]})}catch(e){}return j}}catch(e){}return JSON.parse(JSON.stringify(DEF))}
+cfg:{providers:{gemini:{key:"",key2:""},openai:{url:"https://openrouter.ai/api/v1",key:"",headers:"{}"}},
+roles:{Planner:{provider:"gemini_api",model:"gemini-4-argon"},Builder:{provider:"gemini_api",model:"gemini-3.8-flash",keySlot:"1"},Evaluator:{provider:"gemini_api",model:"gemini-4-argon"}}}};
+function load(){try{const s=localStorage.getItem(KEY);if(s){const j=JSON.parse(s);try{Object.values(j.cfg.roles).forEach(r=>{if(r.provider==="gemini_api"&&GMAP[r.model])r.model=GMAP[r.model]})}catch(e){}cleanCfg(j.cfg);return j}}catch(e){}return JSON.parse(JSON.stringify(DEF))}
 const DOT={not_started:"bg-zinc-500",active:"bg-indigo-400",passing:"bg-emerald-400",blocked:"bg-rose-400"};
 const TAGDOT={"Context Injected":"bg-sky-400","Model Proposes":"bg-violet-400","Harness Gate Check":"bg-amber-400","QA Verification":"bg-emerald-400"};
 const COLS=[["not_started","待辦"],["active","進行中"],["blocked","擱置"],["passing","已通過"]];
@@ -91,11 +91,10 @@ async function call(role,prompt){
           g=pick(await r2.json())}
         out=g.t}
     }else{
-      const q=a.provider==="openai_compatible"?p.openai:p.bridge;
+      const q=p.openai;
       if(!q.url){await sleep(700);out=sim(role,prompt,"還沒設定網址，改用模擬結果")}
       else{let h={"Content-Type":"application/json"};if(q.key)h.Authorization="Bearer "+q.key;try{h={...h,...JSON.parse(q.headers||"{}")}}catch(e){}
-        if(a.provider==="subscription_bridge"&&q.sticky)h["X-Sticky-Session"]="1";
-        const u2=q.url.replace(/\/$/,"")+"/chat/completions";const ef=a.think==="minimal"?"low":a.think;
+                const u2=q.url.replace(/\/$/,"")+"/chat/completions";const ef=a.think==="minimal"?"low":a.think;
         const mk2=e=>({method:"POST",headers:h,body:JSON.stringify({model:a.model,messages:[{role:"system",content:sys},{role:"user",content:prompt}],...(e?{reasoning_effort:e}:{})})});
         let r=await post(u2,mk2(ef));
         let j=await r.json();if(!r.ok&&ef&&/reason|effort/i.test(JSON.stringify(j))){L("Harness Gate Check","這個端點不支援你選的思考程度，改用預設值再試一次");r=await post(u2,mk2(null));j=await r.json()}
@@ -177,7 +176,7 @@ function resetProject(){
   setS(s=>({...s,files:JSON.parse(JSON.stringify(DEF.files)),features:[]}));setLog([]);setSess({role:"idle",tokens:0})}
 function doExport(){setMtext(JSON.stringify({files:S.files,features:S.features,cfg:{...S.cfg,providers:{...S.cfg.providers,gemini:{key:"",key2:""}}}},null,2));setModal("export")}
 function doImport(){try{const j=JSON.parse(mtext);if(!j.files||!Array.isArray(j.features))throw new Error("格式不對");if(j.features.filter(f=>f.status==="active").length>1)throw new Error("同一時間只能有一張進行中的票");
-  setS(s=>({files:j.files,features:j.features,cfg:j.cfg?{...j.cfg,providers:{...j.cfg.providers,gemini:s.cfg.providers.gemini}}:s.cfg}));setModal(null);L("Harness Gate Check","已匯入")}catch(e){alert("匯入失敗："+e.message)}}
+  setS(s=>({files:j.files,features:j.features,cfg:j.cfg?cleanCfg({...j.cfg,providers:{...j.cfg.providers,gemini:s.cfg.providers.gemini}}):s.cfg}));setModal(null);L("Harness Gate Check","已匯入")}catch(e){alert("匯入失敗："+e.message)}}
 
 const outText=f=>"# "+f.id+" "+f.title+"\n\n驗收條件："+f.acceptance+"\n\n## Builder 產出\n\n"+f.builderOut+(f.evalReport?"\n\n## QA 報告\n\n"+f.evalReport:"")+"\n";
 async function copyOut(f){
@@ -245,16 +244,13 @@ return <div className="h-full relative flex text-[14px]">
 </main>
 {right&&<div className="absolute inset-0 z-30 bg-black/50" onClick={()=>setRight(false)}/>}{right&&<aside className="absolute inset-y-0 right-0 z-40 w-[26rem] max-w-full shadow-2xl border-l border-[#1f1f23] bg-[#0c0c0e] overflow-auto p-4 space-y-5">
  <div className="flex items-center"><span className="font-semibold">模型設定</span><button onClick={()=>setRight(false)} className="ml-auto px-4 rounded-lg border border-[#27272a] text-zinc-300">關閉</button></div>
- <div className="flex bg-[#111113] border border-[#1f1f23] rounded-lg p-0.5">{[["standalone","獨立模式"],["bridge","橋接模式"]].map(([k,n])=><button key={k} onClick={()=>setCfg(c=>{c.mode=k;Object.keys(c.roles).forEach(r=>{c.roles[r].provider=k==="bridge"?"subscription_bridge":"gemini_api"})})} className={"flex-1 py-1.5 rounded-md "+(S.cfg.mode===k?"bg-[#27272a] text-zinc-100":"text-zinc-400")}>{n}</button>)}</div>
  <div className="space-y-2"><div className={lbl}>自動化（只對「任務開始」有效）</div>
  {[["next","通過後自動做下一張","Evaluator 驗收通過後，自動接著做下一張票，直到待辦清空"],["retry","沒通過就自動重做","沒通過時，把 QA 報告交給 Builder 修正後再驗收，直到通過；但每張票最多 25 步，到了就會停下來"]].map(([k,t,d])=><label key={k} className={card+" p-2.5 flex items-start gap-2.5"}><input type="checkbox" className="mt-0.5" checked={!!(S.cfg.auto&&S.cfg.auto[k])} onChange={e=>setCfg(c=>{c.auto=c.auto||{};c.auto[k]=e.target.checked})}/><span><span className="block text-zinc-200">{t}</span><span className="block text-[11px] text-zinc-500 mt-0.5 leading-snug">{d}</span></span></label>)}</div>
  <div className="space-y-2"><div className={lbl}>Gemini API Key（兩組，只存在這台裝置）</div><input type="password" placeholder="Key A（GEMINI_API_KEY）" value={S.cfg.providers.gemini.key} onChange={e=>setCfg(c=>{c.providers.gemini.key=e.target.value})} className={inp}/><input type="password" placeholder="Key B（第二組，可留空）" value={S.cfg.providers.gemini.key2||""} onChange={e=>setCfg(c=>{c.providers.gemini.key2=e.target.value})} className={inp}/></div>
  <div className="space-y-2"><div className={lbl}>openai_compatible</div><input placeholder="base_url" value={S.cfg.providers.openai.url} onChange={e=>setCfg(c=>{c.providers.openai.url=e.target.value})} className={inp}/><input type="password" placeholder="api_key" value={S.cfg.providers.openai.key} onChange={e=>setCfg(c=>{c.providers.openai.key=e.target.value})} className={inp}/></div>
- <div className="space-y-2"><div className={lbl}>subscription_bridge</div><input placeholder="http://100.x.x.x:8321/v1" value={S.cfg.providers.bridge.url} onChange={e=>setCfg(c=>{c.providers.bridge.url=e.target.value})} className={inp}/><input placeholder='Headers JSON' value={S.cfg.providers.bridge.headers} onChange={e=>setCfg(c=>{c.providers.bridge.headers=e.target.value})} className={inp}/>
-  <label className="flex items-center gap-2 text-zinc-300"><input type="checkbox" checked={S.cfg.providers.bridge.sticky} onChange={e=>setCfg(c=>{c.providers.bridge.sticky=e.target.checked})}/>Sticky Session</label></div>
  <div className="space-y-2"><div className={lbl}>各角色用哪個模型</div><datalist id="models"><option value="gemini-2.5-pro"/><option value="gemini-2.5-flash"/></datalist>
   {["Planner","Builder","Evaluator"].map(r=><div key={r} className={card+" p-2.5 space-y-1.5"}><div className="text-zinc-300">{r}</div>
-   <select value={S.cfg.roles[r].provider} onChange={e=>setCfg(c=>{c.roles[r].provider=e.target.value})} className={inp}><option>gemini_api</option><option>openai_compatible</option><option>subscription_bridge</option></select>
+   <select value={S.cfg.roles[r].provider} onChange={e=>setCfg(c=>{c.roles[r].provider=e.target.value})} className={inp}><option>gemini_api</option><option>openai_compatible</option></select>
    {S.cfg.roles[r].provider==="gemini_api"?<select value={S.cfg.roles[r].model} onChange={e=>setCfg(c=>{c.roles[r].model=e.target.value})} className={inp+" mono"}>{(GM.includes(S.cfg.roles[r].model)?GM:[S.cfg.roles[r].model,...GM]).map(m=><option key={m} value={m}>{m}</option>)}</select>:<input list="models" value={S.cfg.roles[r].model} onChange={e=>setCfg(c=>{c.roles[r].model=e.target.value})} className={inp+" mono"}/>}
    {S.cfg.roles[r].provider==="gemini_api"&&<div className="flex items-center gap-2"><span className={lbl+" shrink-0"}>API Key</span><div className="flex flex-1 bg-[#111113] border border-[#1f1f23] rounded-lg p-0.5">{[["1","Key A"],["2","Key B"]].map(([v,n])=><button key={v} onClick={()=>setCfg(c=>{c.roles[r].keySlot=v})} className={"flex-1 py-2 rounded-md "+((S.cfg.roles[r].keySlot||"1")===v?"bg-[#27272a] text-zinc-100":"text-zinc-400")}>{n}{v==="2"&&!S.cfg.providers.gemini.key2?"（未填）":""}</button>)}</div></div>}
    <div className="flex items-center gap-2 pt-0.5"><span className={lbl+" shrink-0"}>思考程度</span><select value={S.cfg.roles[r].think||""} onChange={e=>setCfg(c=>{c.roles[r].think=e.target.value})} className={inp}><option value="">模型預設</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></div></div>)}</div>
