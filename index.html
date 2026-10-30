@@ -3,7 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Agent Harness</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<style>:root{color-scheme:dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{height:100%;margin:0;background:#09090b;color:#e4e4e7;font-family:Inter,-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;-webkit-font-smoothing:antialiased}#root{height:100%}button{touch-action:manipulation;font-family:inherit}.mono{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace}textarea,input,select{font-family:inherit}::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-thumb{background:#27272a;border-radius:3px}</style>
+<style>:root{color-scheme:dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{height:100%;margin:0;background:#09090b;color:#e4e4e7;font-family:Inter,-apple-system,"PingFang TC","Noto Sans TC",system-ui,sans-serif;-webkit-font-smoothing:antialiased}#root{height:100%}button{touch-action:manipulation;font-family:inherit;min-height:44px}input,textarea,select{font-size:16px!important}html,body{-webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:100%;overscroll-behavior:none}.mono{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace}textarea,input,select{font-family:inherit}::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-thumb{background:#27272a;border-radius:3px}</style>
 <script src="https://cdn.tailwindcss.com/3.4.17"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
@@ -28,8 +28,8 @@ const SPEC0=`# SPEC.md
 （尚未定義。在下方輸入需求交給 Planner 拆票，或直接在這裡編輯。）`;
 const DEF={files:{agents:AGENTS0,spec:SPEC0,progress:"# progress.md\n（交接日誌）\n",decisions:"# DECISIONS.md\n- ADR-001：狀態存 localStorage，可匯出 JSON。\n"},
 features:[],
-cfg:{providers:{gemini:{key:""},openai:{url:"https://openrouter.ai/api/v1",key:"",headers:"{}"},bridge:{url:"http://100.x.x.x:8321/v1",key:"",headers:"{}",sticky:true}},
-roles:{Planner:{provider:"gemini_api",model:"gemini-2.5-pro"},Builder:{provider:"gemini_api",model:"gemini-2.5-flash"},Evaluator:{provider:"gemini_api",model:"gemini-2.5-pro"}},mode:"standalone"}};
+cfg:{providers:{gemini:{key:"",key2:""},openai:{url:"https://openrouter.ai/api/v1",key:"",headers:"{}"},bridge:{url:"http://100.x.x.x:8321/v1",key:"",headers:"{}",sticky:true}},
+roles:{Planner:{provider:"gemini_api",model:"gemini-2.5-pro"},Builder:{provider:"gemini_api",model:"gemini-2.5-flash",keySlot:"1"},Evaluator:{provider:"gemini_api",model:"gemini-2.5-pro"}},mode:"standalone"}};
 function load(){try{const s=localStorage.getItem(KEY);if(s)return JSON.parse(s)}catch(e){}return JSON.parse(JSON.stringify(DEF))}
 const DOT={not_started:"bg-zinc-500",active:"bg-indigo-400",passing:"bg-emerald-400",blocked:"bg-rose-400"};
 const TAGDOT={"Context Injected":"bg-sky-400","Model Proposes":"bg-violet-400","Harness Gate Check":"bg-amber-400","QA Verification":"bg-emerald-400"};
@@ -47,7 +47,7 @@ const [S,setS]=useState(load);const SR=useRef(S);SR.current=S;const tok=useRef(0
 const [log,setLog]=useState([]);const [sess,setSess]=useState({role:"idle",tokens:0});
 const [busy,setBusy]=useState(false);const [auto,setAuto]=useState(false);const [autoStep,setAutoStep]=useState("");const [tab,setTab]=useState("agents");const [view,setView]=useState("run");
 const [raw,setRaw]=useState("");const [req,setReq]=useState("");
-const [right,setRight]=useState(false);const [modal,setModal]=useState(null);const [mtext,setMtext]=useState("");
+const [right,setRight]=useState(false);const [side,setSide]=useState(()=>window.innerWidth>=900);const [modal,setModal]=useState(null);const [mtext,setMtext]=useState("");
 const [pv,setPv]=useState("Builder");const endRef=useRef(null);
 useEffect(()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}},[S]);
 useEffect(()=>{endRef.current&&endRef.current.scrollIntoView({behavior:"smooth"})},[log]);
@@ -74,14 +74,14 @@ function thinkCfg(model,lv){
   if(/gemini-2\.5/.test(model)){const m={minimal:/pro/.test(model)?128:0,low:1024,medium:8192,high:24576};return {thinkingBudget:m[lv]}}
   return {thinkingLevel:lv}}
 async function call(role,prompt){
-  const c=SR.current.cfg,a=c.roles[role],p=c.providers;
-  L("Context Injected",role+" → "+a.provider+" / "+a.model);simFlag.current=false;setSess(x=>({...x,role}));
+  const c=SR.current.cfg,a=c.roles[role],p=c.providers;const slot=a.keySlot==="2"?"2":"1",gk=(slot==="2"?p.gemini.key2:p.gemini.key)||"";
+  L("Context Injected",role+" → "+a.provider+" / "+a.model+(a.provider==="gemini_api"?" / Key "+(slot==="2"?"B":"A"):""));simFlag.current=false;setSess(x=>({...x,role}));
   const sys=SYS[role]+"\n\n"+ctxText(role);let out;
   try{
     if(a.provider==="gemini_api"){
-      if(!p.gemini.key){await sleep(700);out=sim(role,prompt,"未填 API Key，模擬回退")}
+      if(!gk){await sleep(700);out=sim(role,prompt,"未填 API Key（Key "+(slot==="2"?"B":"A")+"），模擬回退")}
       else{const tc=thinkCfg(a.model,a.think);const u="https://generativelanguage.googleapis.com/v1beta/models/"+a.model+":generateContent";
-        const mk=t=>({method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":p.gemini.key},body:JSON.stringify({systemInstruction:{parts:[{text:sys}]},contents:[{role:"user",parts:[{text:prompt}]}],...(t?{generationConfig:{thinkingConfig:t}}:{})})});
+        const mk=t=>({method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":gk},body:JSON.stringify({systemInstruction:{parts:[{text:sys}]},contents:[{role:"user",parts:[{text:prompt}]}],...(t?{generationConfig:{thinkingConfig:t}}:{})})});
         let r=await post(u,mk(tc));
         let j=await r.json();if(!r.ok&&tc&&/think|budget|level/i.test(JSON.stringify(j))){L("Harness Gate Check","警告：此模型不支援所選思考程度，改用預設再試一次");r=await post(u,mk(null));j=await r.json()}
         if(!r.ok)throw new Error(j.error&&j.error.message||r.status);const pick=jj=>{const c=jj.candidates&&jj.candidates[0];return {t:c&&c.content&&c.content.parts?c.content.parts.map(x=>x.text||"").join(""):"",why:(c&&c.finishReason)||(jj.promptFeedback&&jj.promptFeedback.blockReason)||"未知"}};
@@ -175,7 +175,7 @@ function saveRaw(){
 function resetProject(){
   if(!window.confirm("清空所有任務、規格與進度？API 設定會保留。"))return;
   setS(s=>({...s,files:JSON.parse(JSON.stringify(DEF.files)),features:[]}));setLog([]);setSess({role:"idle",tokens:0})}
-function doExport(){setMtext(JSON.stringify({files:S.files,features:S.features,cfg:{...S.cfg,providers:{...S.cfg.providers,gemini:{key:""}}}},null,2));setModal("export")}
+function doExport(){setMtext(JSON.stringify({files:S.files,features:S.features,cfg:{...S.cfg,providers:{...S.cfg.providers,gemini:{key:"",key2:""}}}},null,2));setModal("export")}
 function doImport(){try{const j=JSON.parse(mtext);if(!j.files||!Array.isArray(j.features))throw new Error("格式不符");if(j.features.filter(f=>f.status==="active").length>1)throw new Error("違反 WIP=1");
   setS(s=>({files:j.files,features:j.features,cfg:j.cfg?{...j.cfg,providers:{...j.cfg.providers,gemini:s.cfg.providers.gemini}}:s.cfg}));setModal(null);L("Harness Gate Check","通過：已匯入狀態")}catch(e){alert("匯入失敗："+e.message)}}
 
@@ -190,27 +190,27 @@ const pct=Math.min(100,((act&&act.steps||0)/CAP)*100);
 const stage=!act?-1:!act.builderOut?0:!act.evalReport?1:2;
 const fail=stage===2;
 const roleName=sess.role==="idle"?"Idle":sess.role==="Evaluator"?"Evaluator · Skeptical":sess.role;
-const Btn=({n,t,s,c,fn})=><button disabled={busy||auto} onClick={fn} className={"text-left rounded-xl px-3 py-2.5 border border-[#27272a] bg-[#111113] active:bg-[#18181b] disabled:opacity-40 "}><div className="flex items-center gap-2"><span className={"mono text-[11px] w-5 h-5 rounded-md flex items-center justify-center "+c}>{n}</span><span className="text-[13px] font-medium">{t}</span></div><div className="text-[11px] text-zinc-500 mt-0.5 pl-7 truncate">{s}</div></button>;
-const Seg=({k,t})=><button onClick={()=>setView(k)} className={"px-4 py-1.5 rounded-md text-[13px] "+(view===k?"bg-[#27272a] text-zinc-100":"text-zinc-400")}>{t}</button>;
+const Btn=({n,t,s,c,fn})=><button disabled={busy||auto} onClick={fn} className={"text-left rounded-xl px-3 py-3 border border-[#27272a] bg-[#111113] active:bg-[#18181b] disabled:opacity-40 "}><div className="flex items-center gap-2"><span className={"mono text-[11px] w-5 h-5 rounded-md flex items-center justify-center "+c}>{n}</span><span className="text-[14px] font-medium">{t}</span></div><div className="text-[11px] text-zinc-500 mt-0.5 pl-7 truncate">{s}</div></button>;
+const Seg=({k,t})=><button onClick={()=>setView(k)} className={"px-5 py-2.5 rounded-md text-[14px] "+(view===k?"bg-[#27272a] text-zinc-100":"text-zinc-400")}>{t}</button>;
 const fcard=f=><div key={f.id} className={card+" p-3 space-y-2"}>
   <div className="flex items-center gap-2"><span className={"w-1.5 h-1.5 rounded-full "+DOT[f.status]}/><span className="mono text-[11px] text-zinc-400">{f.id}</span></div>
-  <div className="text-[13px] leading-snug">{f.title}</div>
-  <div className="text-[12px] text-zinc-500 leading-snug">{f.acceptance}</div>
+  <div className="text-[14px] leading-snug">{f.title}</div>
+  <div className="text-[13px] text-zinc-500 leading-snug">{f.acceptance}</div>
   <div className="mono text-[11px] text-zinc-500">{f.steps||0} 步 · ~{f.tokens||0} tok · {Math.round((f.ms||0)/1000)}s</div>
   <div className="flex gap-2">
-   {f.status==="not_started"&&<button disabled={!!act} onClick={()=>start(f.id)} className="px-3 py-1.5 rounded-lg text-[12px] bg-indigo-500 text-white disabled:bg-[#18181b] disabled:text-zinc-600">{act?"WIP 鎖定":"啟動"}</button>}
-   {(f.status==="active"||f.status==="not_started")&&<button onClick={()=>patch(f.id,{status:"blocked"})} className="px-3 py-1.5 rounded-lg text-[12px] border border-[#27272a] text-zinc-300">封鎖</button>}
-   {f.status==="blocked"&&<button onClick={()=>patch(f.id,{status:"not_started"})} className="px-3 py-1.5 rounded-lg text-[12px] border border-[#27272a] text-zinc-300">解除封鎖</button>}</div>
-  {f.builderOut&&<div className="flex gap-2"><button onClick={()=>copyOut(f)} className="px-3 py-1.5 rounded-lg text-[12px] border border-[#27272a] text-zinc-300">複製產出</button><button onClick={()=>dlOut(f)} className="px-3 py-1.5 rounded-lg text-[12px] border border-[#27272a] text-zinc-300">下載成檔案</button></div>}</div>;
+   {f.status==="not_started"&&<button disabled={!!act} onClick={()=>start(f.id)} className="px-4 py-2.5 rounded-lg text-[13px] bg-indigo-500 text-white disabled:bg-[#18181b] disabled:text-zinc-600">{act?"WIP 鎖定":"啟動"}</button>}
+   {(f.status==="active"||f.status==="not_started")&&<button onClick={()=>patch(f.id,{status:"blocked"})} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">封鎖</button>}
+   {f.status==="blocked"&&<button onClick={()=>patch(f.id,{status:"not_started"})} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">解除封鎖</button>}</div>
+  {f.builderOut&&<div className="flex gap-2"><button onClick={()=>copyOut(f)} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">複製產出</button><button onClick={()=>dlOut(f)} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">下載成檔案</button></div>}</div>;
 
-return <div className="h-full relative flex text-[13px]">
-<aside className="w-48 shrink-0 border-r border-[#1f1f23] flex flex-col bg-[#0c0c0e]">
+return <div className="h-full relative flex text-[14px]">
+{side&&<aside className="w-52 shrink-0 border-r border-[#1f1f23] flex flex-col bg-[#0c0c0e]">
  <div className="px-4 pt-4 pb-3"><div className="font-semibold tracking-tight text-[15px]">Harness</div><div className={lbl+" mt-0.5"}>System of record</div></div>
- <nav className="flex-1 overflow-auto px-2 space-y-0.5">{FILES.map(([k,n])=><button key={k} onClick={()=>{setTab(k);setView("files")}} className={"w-full text-left px-3 py-2.5 rounded-lg flex items-center "+(view==="files"&&tab===k?"bg-[#18181b] text-zinc-100":"text-zinc-400")}><span className="mono text-[12px] truncate">{n}</span>{k==="feature_list"&&<span className="ml-auto mono text-[11px] text-zinc-500">{S.features.filter(f=>f.status==="passing").length}/{S.features.length}</span>}</button>)}</nav>
+ <nav className="flex-1 overflow-auto px-2 space-y-0.5">{FILES.map(([k,n])=><button key={k} onClick={()=>{setTab(k);setView("files");if(window.innerWidth<900)setSide(false)}} className={"w-full text-left px-3 py-2.5 rounded-lg flex items-center "+(view==="files"&&tab===k?"bg-[#18181b] text-zinc-100":"text-zinc-400")}><span className="mono text-[12px] truncate">{n}</span>{k==="feature_list"&&<span className="ml-auto mono text-[11px] text-zinc-500">{S.features.filter(f=>f.status==="passing").length}/{S.features.length}</span>}</button>)}</nav>
  <div className="p-2 space-y-1.5 border-t border-[#1f1f23]"><button onClick={doExport} className="w-full py-2 rounded-lg border border-[#27272a] text-zinc-300">匯出同步包</button><button onClick={()=>{setMtext("");setModal("import")}} className="w-full py-2 rounded-lg border border-[#27272a] text-zinc-300">匯入桌面版狀態</button><button onClick={resetProject} className="w-full py-2 rounded-lg border border-[#27272a] text-rose-300">清空專案</button></div>
-</aside>
+</aside>}
 <main className="flex-1 min-w-0 flex flex-col">
- <header className="px-4 py-3 border-b border-[#1f1f23] flex items-center gap-3">
+ <header className="px-4 py-3 border-b border-[#1f1f23] flex items-center gap-3"><button onClick={()=>setSide(!side)} className="px-4 rounded-lg border border-[#27272a] text-zinc-300">☰</button>
   <div className="flex bg-[#111113] border border-[#1f1f23] rounded-lg p-0.5"><Seg k="run" t="執行"/><Seg k="board" t="看板"/><Seg k="files" t="檔案"/></div>
   <div className="flex items-center gap-2 min-w-0"><span className={"w-1.5 h-1.5 rounded-full "+(sess.role==="idle"?"bg-zinc-500":sess.role==="Evaluator"?"bg-rose-400":sess.role==="Builder"?"bg-indigo-400":"bg-violet-400")}/><span className="text-zinc-300 truncate">{roleName}</span></div>
   <span className="ml-auto mono text-[11px] text-zinc-500">~{sess.tokens} tok</span>
@@ -225,7 +225,7 @@ return <div className="h-full relative flex text-[13px]">
   </div>
   <div className="space-y-3">
    {log.length===0&&<div className="text-zinc-500 py-8 text-center">執行紀錄會顯示在這裡。依序執行下方 1、2、3。</div>}
-   {log.map((e,i)=><div key={i} className="flex gap-3"><span className={"mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 "+(TAGDOT[e.tag]||"bg-zinc-500")}/><div className="min-w-0"><div className={lbl}>{e.tag}</div><pre className="whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-zinc-300 mt-0.5" style={{fontFamily:"inherit"}}>{e.text}</pre></div></div>)}
+   {log.map((e,i)=><div key={i} className="flex gap-3"><span className={"mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 "+(TAGDOT[e.tag]||"bg-zinc-500")}/><div className="min-w-0"><div className={lbl}>{e.tag}</div><pre className="whitespace-pre-wrap break-words text-[14px] leading-relaxed text-zinc-300 mt-0.5" style={{fontFamily:"inherit"}}>{e.text}</pre></div></div>)}
    {busy&&<div className="text-zinc-500 animate-pulse pl-5">處理中…</div>}<div ref={endRef}/></div>
  </div>}
  {view==="board"&&<div className="p-4 grid grid-cols-4 gap-3 items-start min-w-[760px]">{COLS.map(([k,n])=><div key={k} className="space-y-2">
@@ -243,12 +243,12 @@ return <div className="h-full relative flex text-[13px]">
    <Btn n="4" t="交接" s="寫入 progress.md 並重置 Session" c="bg-zinc-500/20 text-zinc-300" fn={handoff}/></div>
  </footer>
 </main>
-{right&&<aside className="absolute inset-y-0 right-0 z-40 w-80 max-w-full shadow-2xl border-l border-[#1f1f23] bg-[#0c0c0e] overflow-auto p-4 space-y-5">
- <div className="flex items-center"><span className="font-semibold">模型路由</span><button onClick={()=>setRight(false)} className="ml-auto px-2 text-zinc-400">關閉</button></div>
+{right&&<div className="absolute inset-0 z-30 bg-black/50" onClick={()=>setRight(false)}/>}{right&&<aside className="absolute inset-y-0 right-0 z-40 w-[26rem] max-w-full shadow-2xl border-l border-[#1f1f23] bg-[#0c0c0e] overflow-auto p-4 space-y-5">
+ <div className="flex items-center"><span className="font-semibold">模型路由</span><button onClick={()=>setRight(false)} className="ml-auto px-4 rounded-lg border border-[#27272a] text-zinc-300">關閉</button></div>
  <div className="flex bg-[#111113] border border-[#1f1f23] rounded-lg p-0.5">{[["standalone","獨立模式"],["bridge","橋接模式"]].map(([k,n])=><button key={k} onClick={()=>setCfg(c=>{c.mode=k;Object.keys(c.roles).forEach(r=>{c.roles[r].provider=k==="bridge"?"subscription_bridge":"gemini_api"})})} className={"flex-1 py-1.5 rounded-md "+(S.cfg.mode===k?"bg-[#27272a] text-zinc-100":"text-zinc-400")}>{n}</button>)}</div>
  <div className="space-y-2"><div className={lbl}>自動化（作用於「任務開始」）</div>
  {[["next","通過後自動接續下一張待辦","Evaluator PASS 後自動領取下一張，繼續 Builder → Evaluator，直到待辦清空"],["retry","驗收未過自動重做再驗收","FAIL 時帶 QA 報告回 Builder 修正再驗，直到 PASS；仍受每任務 25 步熔斷限制"]].map(([k,t,d])=><label key={k} className={card+" p-2.5 flex items-start gap-2.5"}><input type="checkbox" className="mt-0.5" checked={!!(S.cfg.auto&&S.cfg.auto[k])} onChange={e=>setCfg(c=>{c.auto=c.auto||{};c.auto[k]=e.target.checked})}/><span><span className="block text-zinc-200">{t}</span><span className="block text-[11px] text-zinc-500 mt-0.5 leading-snug">{d}</span></span></label>)}</div>
- <div className="space-y-2"><div className={lbl}>gemini_api · Key 僅存本機</div><input type="password" placeholder="GEMINI_API_KEY" value={S.cfg.providers.gemini.key} onChange={e=>setCfg(c=>{c.providers.gemini.key=e.target.value})} className={inp}/></div>
+ <div className="space-y-2"><div className={lbl}>gemini_api · 兩組 Key 僅存本機</div><input type="password" placeholder="Key A（GEMINI_API_KEY）" value={S.cfg.providers.gemini.key} onChange={e=>setCfg(c=>{c.providers.gemini.key=e.target.value})} className={inp}/><input type="password" placeholder="Key B（第二組，可留空）" value={S.cfg.providers.gemini.key2||""} onChange={e=>setCfg(c=>{c.providers.gemini.key2=e.target.value})} className={inp}/></div>
  <div className="space-y-2"><div className={lbl}>openai_compatible</div><input placeholder="base_url" value={S.cfg.providers.openai.url} onChange={e=>setCfg(c=>{c.providers.openai.url=e.target.value})} className={inp}/><input type="password" placeholder="api_key" value={S.cfg.providers.openai.key} onChange={e=>setCfg(c=>{c.providers.openai.key=e.target.value})} className={inp}/></div>
  <div className="space-y-2"><div className={lbl}>subscription_bridge</div><input placeholder="http://100.x.x.x:8321/v1" value={S.cfg.providers.bridge.url} onChange={e=>setCfg(c=>{c.providers.bridge.url=e.target.value})} className={inp}/><input placeholder='Headers JSON' value={S.cfg.providers.bridge.headers} onChange={e=>setCfg(c=>{c.providers.bridge.headers=e.target.value})} className={inp}/>
   <label className="flex items-center gap-2 text-zinc-300"><input type="checkbox" checked={S.cfg.providers.bridge.sticky} onChange={e=>setCfg(c=>{c.providers.bridge.sticky=e.target.checked})}/>Sticky Session</label></div>
@@ -256,8 +256,9 @@ return <div className="h-full relative flex text-[13px]">
   {["Planner","Builder","Evaluator"].map(r=><div key={r} className={card+" p-2.5 space-y-1.5"}><div className="text-zinc-300">{r}</div>
    <select value={S.cfg.roles[r].provider} onChange={e=>setCfg(c=>{c.roles[r].provider=e.target.value})} className={inp}><option>gemini_api</option><option>openai_compatible</option><option>subscription_bridge</option></select>
    <input list="models" value={S.cfg.roles[r].model} onChange={e=>setCfg(c=>{c.roles[r].model=e.target.value})} className={inp+" mono"}/>
+   {S.cfg.roles[r].provider==="gemini_api"&&<div className="flex items-center gap-2"><span className={lbl+" shrink-0"}>API Key</span><div className="flex flex-1 bg-[#111113] border border-[#1f1f23] rounded-lg p-0.5">{[["1","Key A"],["2","Key B"]].map(([v,n])=><button key={v} onClick={()=>setCfg(c=>{c.roles[r].keySlot=v})} className={"flex-1 py-2 rounded-md "+((S.cfg.roles[r].keySlot||"1")===v?"bg-[#27272a] text-zinc-100":"text-zinc-400")}>{n}{v==="2"&&!S.cfg.providers.gemini.key2?"（未填）":""}</button>)}</div></div>}
    <div className="flex items-center gap-2 pt-0.5"><span className={lbl+" shrink-0"}>思考程度</span><select value={S.cfg.roles[r].think||""} onChange={e=>setCfg(c=>{c.roles[r].think=e.target.value})} className={inp}><option value="">模型預設</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></div></div>)}</div>
- <div className="space-y-2"><div className="flex items-center gap-1"><span className={lbl+" mr-auto"}>Context 預覽</span>{["Planner","Builder","Evaluator"].map(r=><button key={r} onClick={()=>setPv(r)} className={"px-2 py-1 rounded-md text-[11px] "+(pv===r?"bg-[#27272a] text-zinc-100":"text-zinc-500")}>{r}</button>)}</div>
+ <div className="space-y-2"><div className="flex items-center gap-1"><span className={lbl+" mr-auto"}>Context 預覽</span>{["Planner","Builder","Evaluator"].map(r=><button key={r} onClick={()=>setPv(r)} className={"px-3 py-2 rounded-md text-[12px] "+(pv===r?"bg-[#27272a] text-zinc-100":"text-zinc-500")}>{r}</button>)}</div>
   <pre className={card+" mono text-[11px] whitespace-pre-wrap p-2.5 max-h-72 overflow-auto text-zinc-400"}>{"[System]\n"+SYS[pv]+"\n\n"+ctxText(pv)}</pre></div>
 </aside>}
 {modal&&<div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50"><div className={card+" w-full max-w-xl p-4 space-y-3"}>
