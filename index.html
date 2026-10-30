@@ -35,7 +35,7 @@ const DOT={not_started:"bg-zinc-500",active:"bg-indigo-400",passing:"bg-emerald-
 const TAGDOT={"Context Injected":"bg-sky-400","Model Proposes":"bg-violet-400","Harness Gate Check":"bg-amber-400","QA Verification":"bg-emerald-400"};
 const COLS=[["not_started","待辦"],["active","進行中"],["blocked","擱置"],["passing","已通過"]];
 const FILES=[["agents","AGENTS.md"],["spec","SPEC.md"],["feature_list","feature_list.json"],["progress","progress.md"],["decisions","DECISIONS.md"]];
-const TAGZH={"Harness Gate Check":"流程檢查","Context Injected":"送出內容","Model Proposes":"模型回覆"};const STAGES=["開始","製作","驗收","通過"];
+const TAGZH={"Harness Gate Check":"流程檢查","Context Injected":"送出內容","Model Proposes":"模型回覆","QA Verification":"驗收結果"};const STAGES=["開始","製作","驗收","通過"];
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function post(u,o){let r;for(let i=0;i<3;i++){r=await fetch(u,o);if(r.status!==503&&r.status!==429)return r;await sleep(1500*(i+1))}return r}
 const card="bg-[#111113] border border-[#1f1f23] rounded-xl";
@@ -47,7 +47,7 @@ const [S,setS]=useState(load);const SR=useRef(S);SR.current=S;const tok=useRef(0
 const [log,setLog]=useState([]);const [sess,setSess]=useState({role:"idle",tokens:0});
 const [busy,setBusy]=useState(false);const [auto,setAuto]=useState(false);const [autoStep,setAutoStep]=useState("");const [tab,setTab]=useState("agents");const [view,setView]=useState("run");
 const [raw,setRaw]=useState("");const [req,setReq]=useState("");
-const [right,setRight]=useState(false);const [side,setSide]=useState(()=>window.innerWidth>=900);const [modal,setModal]=useState(null);const [mtext,setMtext]=useState("");
+const [right,setRight]=useState(false);const [side,setSide]=useState(()=>window.innerWidth>=900);const [modal,setModal]=useState(null);const [revId,setRevId]=useState(null);const [revKind,setRevKind]=useState("build");const [mtext,setMtext]=useState("");
 const [pv,setPv]=useState("Builder");const endRef=useRef(null);
 useEffect(()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}},[S]);
 useEffect(()=>{endRef.current&&endRef.current.scrollIntoView({behavior:"smooth"})},[log]);
@@ -104,11 +104,11 @@ async function call(role,prompt){
   return out}
 
 async function runPlanner(){
-  if(busy)return false;let ok=false;if(!req.trim()){setView("run");L("Harness Gate Check","請先在下方輸入框寫下需求");return false}setBusy(true);setView("run");
-  try{const out=await call("Planner","需求：\n"+req+"\n請輸出 JSON 陣列。");L("Model Proposes",out);
+  if(busy)return false;let ok=false;const pr=SR.current.planReview||"",reqT=req.trim()||(pr?SR.current.lastReq||"":"");if(!reqT){setView("run");L("Harness Gate Check","請先在下方輸入框寫下需求");return false}setBusy(true);setView("run");
+  try{const out=await call("Planner",pr?"需求：\n"+reqT+"\n\n目前待辦的任務清單（尚未開始的票）：\n"+(SR.current.features.filter(f=>f.status==="not_started").map(f=>"- "+f.title+"：驗收="+f.acceptance).join("\n")||"（無）")+"\n\n外部審查意見（來自另一個 AI，不一定每條都對）：\n"+pr+"\n\n請逐條判斷哪些意見合理，據此輸出調整後「完整的」待辦任務清單（不含已經開始或完成的票）；不同意的意見請略過。只輸出 JSON 陣列。":"需求：\n"+req+"\n請輸出 JSON 陣列。");L("Model Proposes",out);
     const m=out.match(/\[[\s\S]*\]/);const arr=JSON.parse(m?m[0]:out);const n=SR.current.features.length;
-    setS(s=>({...s,files:{...s.files,spec:s.files.spec+"\n\n## 新需求\n"+req},features:[...s.features,...arr.map((x,i)=>({id:"F-"+String(n+i).padStart(3,"0"),title:x.title,acceptance:x.acceptance||"",status:"not_started",steps:0}))]}));
-    L("Harness Gate Check","已加入 "+arr.length+" 張票到待辦，要由你按「開始」才會啟動");ok=true}
+    setS(s=>({...s,lastReq:reqT,planReview:"",files:pr?s.files:{...s.files,spec:s.files.spec+"\n\n## 新需求\n"+req},features:[...(pr?s.features.filter(f=>f.status!=="not_started"):s.features),...arr.map((x,i)=>({id:"F-"+String(n+i).padStart(3,"0"),title:x.title,acceptance:x.acceptance||"",status:"not_started",steps:0}))]}));
+    L("Harness Gate Check",(pr?"已依外部意見調整待辦，現在共 "+arr.length+" 張票，要由你按「開始」才會啟動":"已加入 "+arr.length+" 張票到待辦，要由你按「開始」才會啟動"));ok=true}
   catch(e){L("Harness Gate Check","Planner 回傳的內容看不懂，不是正確的 JSON（"+e.message+"）")}
   setBusy(false);setSess(x=>({...x,role:"idle"}));return ok}
 async function runBuilder(){
@@ -116,19 +116,19 @@ async function runBuilder(){
   if(!f){const n=SR.current.features.find(x=>x.status==="not_started");if(!n){L("Harness Gate Check","目前沒有可以開始的票");return false}if(!start(n.id))return false;f=n}
   if((f.steps||0)>=CAP){L("Harness Gate Check","這張票已經做了 "+CAP+" 步，到上限了，請先按「交接」重新開始");return false}
   setBusy(true);const t0=Date.now();
-  const rev=f.evalReport&&f.builderOut;
-  const out=await call("Builder",(rev?"請根據 QA 報告修正任務：":"請實作任務：")+f.title+"\n驗收條件："+f.acceptance+(rev?"\n\n你上一版的產出：\n"+f.builderOut+"\n\nQA 報告（未通過）：\n"+f.evalReport+"\n\n請逐條修正上述問題，輸出完整的修正後版本。":""));if(!out||!out.trim()){L("Harness Gate Check","Builder 沒有回傳內容，這一步不計入步數。可能是模型太忙，或思考用掉了輸出額度；請再試一次，或到設定把 Builder 的思考程度調低");setBusy(false);setSess(x=>({...x,role:"idle"}));return false}
+  const rev=f.evalReport&&f.builderOut;const ext=f.extReview&&f.builderOut?f.extReview:"";
+  const out=await call("Builder",(rev?"請根據 QA 報告修正任務：":ext?"請檢視並視需要修正任務：":"請實作任務：")+f.title+"\n驗收條件："+f.acceptance+((rev||ext)?"\n\n你上一版的產出：\n"+f.builderOut:"")+(rev?"\n\nQA 報告（未通過）：\n"+f.evalReport:"")+(ext?"\n\n外部審查意見（來自另一個 AI，不一定每條都對）：\n"+ext+"\n\n請逐條判斷哪些意見合理：需要修改的就修正，不同意的請簡短說明理由（如果上面有 QA 報告，也要一併處理）。最後輸出完整的最終版本；如果完全不需要修改，就輸出原版並說明原因。":(rev?"\n\n請逐條修正上述問題，輸出完整的修正後版本。":"")));if(!out||!out.trim()){L("Harness Gate Check","Builder 沒有回傳內容，這一步不計入步數。可能是模型太忙，或思考用掉了輸出額度；請再試一次，或到設定把 Builder 的思考程度調低");setBusy(false);setSess(x=>({...x,role:"idle"}));return false}
   L("Model Proposes",out);
-  patch(f.id,{steps:(f.steps||0)+1,builderOut:out,evalReport:null,tokens:(f.tokens||0)+tok.current,ms:(f.ms||0)+Date.now()-t0});
+  patch(f.id,{steps:(f.steps||0)+1,builderOut:out,evalReport:null,extReview:"",extEval:"",tokens:(f.tokens||0)+tok.current,ms:(f.ms||0)+Date.now()-t0});
   L("Harness Gate Check","Builder 做完了，但有沒有通過要由 Evaluator 決定，請接著按 3 驗收");setBusy(false);setSess(x=>({...x,role:"idle"}));return true}
 async function runEval(){
   if(busy)return false;evalRes.current="error";setView("run");const f=SR.current.features.find(x=>x.status==="active");
   if(!f||!f.builderOut){L("Harness Gate Check","還沒有可以驗收的內容，請先讓 Builder 把進行中的票做完");return false}
   if((f.steps||0)>=CAP){L("Harness Gate Check","這張票的步數已到上限，請先按「交接」重新開始");return false}
   setBusy(true);const t0=Date.now();
-  const out=await call("Evaluator","請嚴格驗收任務："+f.title+"\n驗收條件："+f.acceptance+"\n\nBuilder 產出：\n"+f.builderOut);
+  const out=await call("Evaluator","請嚴格驗收任務："+f.title+"\n驗收條件："+f.acceptance+"\n\nBuilder 產出：\n"+f.builderOut+(f.extEval&&f.evalReport?"\n\n上一份驗收報告：\n"+f.evalReport+"\n\n外部審查意見（來自另一個 AI，不一定每條都對）：\n"+f.extEval+"\n\n請重新審視：逐條判斷這些意見是否合理，再給出你最終的驗收結論。第一行必須是 VERDICT: PASS 或 VERDICT: FAIL。":""));
   if(!out||!out.trim()){L("Harness Gate Check","Evaluator 沒有回傳內容，沒辦法得出驗收結果，請再試一次");setBusy(false);setSess(x=>({...x,role:"idle"}));return false}
-  L("QA Verification",out);const ev={steps:(f.steps||0)+1,evalReport:out,tokens:(f.tokens||0)+tok.current,ms:(f.ms||0)+Date.now()-t0};
+  L("QA Verification",out);const ev={steps:(f.steps||0)+1,evalReport:out,extEval:"",tokens:(f.tokens||0)+tok.current,ms:(f.ms||0)+Date.now()-t0};
   const pass=/^\s*VERDICT:\s*PASS/i.test(out);const okp=pass&&!simFlag.current;evalRes.current=okp?"pass":pass?"error":"fail";if(okp){patch(f.id,{...ev,status:"passing"});addProgress("## "+new Date().toLocaleString()+"\n- "+f.id+" "+f.title+" → PASS（steps "+ev.steps+"）");L("Harness Gate Check","驗收通過！這張票完成了，進度已記到 progress.md，可以做下一張")}
   else{patch(f.id,ev);L("Harness Gate Check",pass?"驗收時 API 出錯，現在只是模擬結果，不能算通過，這張票維持進行中。請先檢查 API，再重新驗收":"驗收沒通過，這張票維持進行中，請再按 2 讓 Builder 修正")}
   setBusy(false);setSess(x=>({...x,role:"idle"}));return okp}
@@ -179,6 +179,14 @@ function doImport(){try{const j=JSON.parse(mtext);if(!j.files||!Array.isArray(j.
   setS(s=>({files:j.files,features:j.features,cfg:j.cfg?cleanCfg({...j.cfg,providers:{...j.cfg.providers,gemini:s.cfg.providers.gemini}}):s.cfg}));setModal(null);L("Harness Gate Check","已匯入")}catch(e){alert("匯入失敗："+e.message)}}
 
 const outText=f=>"# "+f.id+" "+f.title+"\n\n驗收條件："+f.acceptance+"\n\n## Builder 產出\n\n"+f.builderOut+(f.evalReport?"\n\n## QA 報告\n\n"+f.evalReport:"")+"\n";
+const listText=()=>SR.current.features.map(f=>"- "+f.id+"［"+f.status+"］"+f.title+"：驗收="+f.acceptance).join("\n")||"（目前沒有任何票）";
+const reviewPrompt=(kind,f)=>{
+ if(kind==="plan")return "你是資深的專案規劃審查者。下面是一份需求和已經拆好的任務清單。請檢查：\n1. 任務有沒有涵蓋需求、是否有遺漏\n2. 每張票是否小到可以一次做完、驗收條件是否具體可檢驗\n3. 順序是否合理、有沒有重複或互相衝突\n請依重要程度列出問題，並給出具體的調整建議（可以直接寫出修改後的清單）；如果沒有問題，請直接說「沒有需要調整的地方」。\n\n## 需求\n"+(req.trim()||SR.current.lastReq||"（未提供）")+"\n\n## SPEC.md\n"+SR.current.files.spec+"\n\n## 目前的任務清單\n"+listText()+"\n";
+ if(kind==="eval")return "你是第二位獨立的 QA 審查者。下面有一個任務、它的驗收條件、Builder 的產出，以及 Evaluator 已經給出的驗收報告。請判斷：\n1. 這份驗收報告有沒有漏掉的問題，或是判斷過嚴、過鬆\n2. 你認為最後應該通過還是不通過，並說明理由\n請依重要程度列出，並給出具體依據；如果同意原本的結論，請說明同意的理由。\n\n# "+f.id+" "+f.title+"\n\n驗收條件：\n"+f.acceptance+"\n\n## Builder 產出\n\n"+f.builderOut+"\n\n## Evaluator 驗收報告\n\n"+f.evalReport+"\n";
+ return "你是嚴格的程式碼審查者。請檢查下面這份作品是否符合驗收條件，找出錯誤、邊界情況的漏洞、缺漏的功能，以及可以改進的地方。\n請依重要程度列出問題，每一項說明原因和具體的修改建議；如果沒有明顯問題，請直接說「沒有需要修改的地方」。\n\n# "+f.id+" "+f.title+"\n\n驗收條件：\n"+f.acceptance+"\n\n## Builder 產出\n\n"+f.builderOut+"\n"};
+async function copyReview(kind,f){const t=reviewPrompt(kind,f);try{await navigator.clipboard.writeText(t);L("Harness Gate Check","已複製給外部檢查用的內容。貼到你的 AI 聊天視窗，拿到回覆後按對應的「貼回…意見」")}catch(e){setMtext(t);setModal("export");L("Harness Gate Check","沒辦法直接複製，已開啟視窗，請自己全選後複製")}}
+function openReview(kind,f){setRevKind(kind);setRevId(f?f.id:null);setMtext(kind==="plan"?(S.planReview||""):kind==="eval"?(f.extEval||""):(f.extReview||""));setModal("review")}
+function saveReview(){const t=mtext.trim();if(revKind==="plan")setS(s=>({...s,planReview:t}));else patch(revId,revKind==="eval"?{extEval:t}:{extReview:t});setModal(null);L("Harness Gate Check",t?"已收到外部檢查意見，請按 "+(revKind==="plan"?"1 讓 Planner 重新調整任務":revKind==="eval"?"3 讓 Evaluator 重新驗收":"2 讓 Builder 判斷要不要修改"):"已清除外部檢查意見")}
 async function copyOut(f){
   try{await navigator.clipboard.writeText(outText(f));L("Harness Gate Check","已複製 "+f.id+" 的內容到剪貼簿")}
   catch(e){setMtext(outText(f));setModal("export");L("Harness Gate Check","沒辦法直接複製，已開啟視窗，請自己全選後複製")}}
@@ -200,7 +208,7 @@ const fcard=f=><div key={f.id} className={card+" p-3 space-y-2"}>
    {f.status==="not_started"&&<button disabled={!!act} onClick={()=>start(f.id)} className="px-4 py-2.5 rounded-lg text-[13px] bg-indigo-500 text-white disabled:bg-[#18181b] disabled:text-zinc-600">{act?"已有進行中的票":"開始"}</button>}
    {(f.status==="active"||f.status==="not_started")&&<button onClick={()=>patch(f.id,{status:"blocked"})} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">擱置</button>}
    {f.status==="blocked"&&<button onClick={()=>patch(f.id,{status:"not_started"})} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">取消擱置</button>}</div>
-  {f.builderOut&&<div className="flex gap-2"><button onClick={()=>copyOut(f)} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">複製內容</button><button onClick={()=>dlOut(f)} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">下載檔案</button></div>}</div>;
+  {f.builderOut&&<div className="flex flex-wrap gap-2"><button onClick={()=>copyOut(f)} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">複製內容</button><button onClick={()=>dlOut(f)} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">下載檔案</button><button onClick={()=>copyReview("build",f)} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">複製成品去檢查</button><button onClick={()=>openReview("build",f)} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">貼回成品意見{f.extReview?" ✓":""}</button>{f.evalReport&&<><button onClick={()=>copyReview("eval",f)} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">複製驗收去檢查</button><button onClick={()=>openReview("eval",f)} className="px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">貼回驗收意見{f.extEval?" ✓":""}</button></>}</div>}</div>;
 
 return <div className="h-full relative flex text-[14px]">
 {side&&<aside className="w-52 shrink-0 border-r border-[#1f1f23] flex flex-col bg-[#0c0c0e]">
@@ -229,6 +237,7 @@ return <div className="h-full relative flex text-[14px]">
  </div>}
  {view==="board"&&<div className="p-4 grid grid-cols-4 gap-3 items-start min-w-[760px]">{COLS.map(([k,n])=><div key={k} className="space-y-2">
    <div className="flex items-center gap-2 px-1"><span className={"w-1.5 h-1.5 rounded-full "+DOT[k]}/><span className={lbl}>{n}</span>{k==="not_started"&&S.cfg.auto&&S.cfg.auto.next&&<span className="text-[10px] text-indigo-300">自動接著做</span>}<span className="mono text-[11px] text-zinc-600">{S.features.filter(f=>f.status===k).length}{k==="active"?"/1":""}</span></div>
+   {k==="not_started"&&S.features.length>0&&<div className="space-y-2"><button onClick={()=>copyReview("plan")} className="w-full px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">複製拆票去檢查</button><button onClick={()=>openReview("plan")} className="w-full px-4 py-2.5 rounded-lg text-[13px] border border-[#27272a] text-zinc-300">貼回拆票意見{S.planReview?" ✓":""}</button></div>}
    {S.features.filter(f=>f.status===k).map(fcard)}</div>)}</div>}
  {view==="files"&&<div className="p-4 h-full flex flex-col gap-2"><div className="flex items-center"><span className="mono text-[12px] text-zinc-400">{FILES.find(f=>f[0]===tab)[1]}</span>{tab==="feature_list"&&<button onClick={saveRaw} className="ml-auto px-3 py-1.5 rounded-lg bg-indigo-500 text-white">儲存（會先檢查格式）</button>}</div>
   {tab==="feature_list"?<textarea value={raw} onChange={e=>setRaw(e.target.value)} className={inp+" flex-1 mono text-[12px] leading-relaxed"}/>:<textarea value={S.files[tab]} onChange={e=>setFiles(tab,e.target.value)} className={inp+" flex-1 mono text-[12px] leading-relaxed"}/>}</div>}
@@ -258,10 +267,10 @@ return <div className="h-full relative flex text-[14px]">
   <pre className={card+" mono text-[11px] whitespace-pre-wrap p-2.5 max-h-72 overflow-auto text-zinc-400"}>{"[System]\n"+SYS[pv]+"\n\n"+ctxText(pv)}</pre></div>
 </aside>}
 {modal&&<div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50"><div className={card+" w-full max-w-xl p-4 space-y-3"}>
- <div className="font-semibold">{modal==="export"?"匯出備份（複製後貼到另一台裝置）":"貼上備份內容（JSON）"}</div>
- <textarea value={mtext} onChange={e=>setMtext(e.target.value)} readOnly={modal==="export"} className={inp+" h-64 mono text-[12px]"}/>
+ <div className="font-semibold">{modal==="export"?"複製這段內容":modal==="review"?"貼上外部檢查的意見（"+(revKind==="plan"?"拆票":revKind==="eval"?"驗收":"成品")+"；空白儲存＝清除）":"貼上備份內容（JSON）"}</div>
+ <textarea value={mtext} onChange={e=>setMtext(e.target.value)} readOnly={modal==="export"} placeholder={modal==="review"?"把另一個 AI 的檢查回覆貼在這裡":""} className={inp+" h-64 mono text-[12px]"}/>
  <div className="flex gap-2 justify-end"><button onClick={()=>setModal(null)} className="px-4 py-2 rounded-lg border border-[#27272a] text-zinc-300">關閉</button>
- {modal==="export"?<button onClick={()=>{try{navigator.clipboard.writeText(mtext)}catch(e){}}} className="px-4 py-2 rounded-lg bg-indigo-500 text-white">複製</button>:<button onClick={doImport} className="px-4 py-2 rounded-lg bg-indigo-500 text-white">匯入</button>}</div></div></div>}
+ {modal==="export"?<button onClick={()=>{try{navigator.clipboard.writeText(mtext)}catch(e){}}} className="px-4 py-2 rounded-lg bg-indigo-500 text-white">複製</button>:modal==="review"?<button onClick={saveReview} className="px-4 py-2 rounded-lg bg-indigo-500 text-white">儲存意見</button>:<button onClick={doImport} className="px-4 py-2 rounded-lg bg-indigo-500 text-white">匯入</button>}</div></div></div>}
 </div>}
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script></body></html>
