@@ -43,7 +43,7 @@ const inp="w-full bg-[#09090b] border border-[#27272a] rounded-lg px-3 py-2 text
 const lbl="text-[11px] uppercase tracking-wider text-zinc-500";
 
 function App(){
-const [S,setS]=useState(load);const SR=useRef(S);SR.current=S;const tok=useRef(0);const simFlag=useRef(false);
+const [S,setS]=useState(load);const SR=useRef(S);SR.current=S;const tok=useRef(0);const simFlag=useRef(false);const stopRef=useRef(false);const evalRes=useRef("");
 const [log,setLog]=useState([]);const [sess,setSess]=useState({role:"idle",tokens:0});
 const [busy,setBusy]=useState(false);const [auto,setAuto]=useState(false);const [autoStep,setAutoStep]=useState("");const [tab,setTab]=useState("agents");const [view,setView]=useState("run");
 const [raw,setRaw]=useState("");const [req,setReq]=useState("");
@@ -123,26 +123,44 @@ async function runBuilder(){
   patch(f.id,{steps:(f.steps||0)+1,builderOut:out,evalReport:null,tokens:(f.tokens||0)+tok.current,ms:(f.ms||0)+Date.now()-t0});
   L("Harness Gate Check","Builder 無權標記 passing，請交由 Evaluator 驗收");setBusy(false);setSess(x=>({...x,role:"idle"}));return true}
 async function runEval(){
-  if(busy)return false;setView("run");const f=SR.current.features.find(x=>x.status==="active");
+  if(busy)return false;evalRes.current="error";setView("run");const f=SR.current.features.find(x=>x.status==="active");
   if(!f||!f.builderOut){L("Harness Gate Check","拒絕：需要有 Builder 產出的 active 任務才能驗收");return false}
   if((f.steps||0)>=CAP){L("Harness Gate Check","熔斷：步數已達上限，請先交接");return false}
   setBusy(true);const t0=Date.now();
   const out=await call("Evaluator","請嚴格驗收任務："+f.title+"\n驗收條件："+f.acceptance+"\n\nBuilder 產出：\n"+f.builderOut);
   if(!out||!out.trim()){L("Harness Gate Check","拒絕：Evaluator 回傳空內容，未形成驗收結論，請重試");setBusy(false);setSess(x=>({...x,role:"idle"}));return false}
   L("QA Verification",out);const ev={steps:(f.steps||0)+1,evalReport:out,tokens:(f.tokens||0)+tok.current,ms:(f.ms||0)+Date.now()-t0};
-  const pass=/^\s*VERDICT:\s*PASS/i.test(out);const okp=pass&&!simFlag.current;if(okp){patch(f.id,{...ev,status:"passing"});addProgress("## "+new Date().toLocaleString()+"\n- "+f.id+" "+f.title+" → PASS（steps "+ev.steps+"）");L("Harness Gate Check","通過：Evaluator 回傳 PASS，任務轉為 passing 並追加 progress.md，WIP 鎖定解除")}
+  const pass=/^\s*VERDICT:\s*PASS/i.test(out);const okp=pass&&!simFlag.current;evalRes.current=okp?"pass":pass?"error":"fail";if(okp){patch(f.id,{...ev,status:"passing"});addProgress("## "+new Date().toLocaleString()+"\n- "+f.id+" "+f.title+" → PASS（steps "+ev.steps+"）");L("Harness Gate Check","通過：Evaluator 回傳 PASS，任務轉為 passing 並追加 progress.md，WIP 鎖定解除")}
   else{patch(f.id,ev);L("Harness Gate Check",pass?"拒絕：驗收階段 API 失敗，結果為模擬回退，不得放行，維持 active。請檢查 API 後重新驗收":"拒絕：Evaluator 回傳 FAIL，維持 active，請再執行 Builder 修正")}
   setBusy(false);setSess(x=>({...x,role:"idle"}));return okp}
 async function runAll(){
-  if(busy||auto)return;setAuto(true);setView("run");
-  L("Harness Gate Check","一鍵流程開始：Planner → Builder → Evaluator");
-  let ok=true;
+  if(busy||auto)return;setAuto(true);setView("run");stopRef.current=false;
+  const cf=SR.current.cfg.auto||{};const todo=()=>SR.current.features.some(f=>f.status==="not_started");
+  L("Harness Gate Check","一鍵流程開始：Planner → Builder → Evaluator"+(cf.next?"｜通過後自動接續下一張":"")+(cf.retry?"｜未過自動重做":""));
+  let ok=true,why="前一步未成功",done=0;
   if(SR.current.features.some(f=>f.status==="active"))L("Harness Gate Check","略過 Planner：已有 active 任務，直接接續 Builder");
+  else if(!req.trim()&&todo())L("Harness Gate Check","略過 Planner：未輸入需求，直接領取待辦");
   else{setAutoStep("Planner");ok=await runPlanner();await sleep(150)}
-  if(ok){setAutoStep("Builder");ok=await runBuilder();await sleep(150)}
-  if(ok){setAutoStep("Evaluator");const r=await runEval();L("Harness Gate Check",r?"一鍵流程完成：任務已通過驗收":"一鍵流程停止：驗收未通過，請查看 QA 報告，修正後再按 2 與 3")}
-  else L("Harness Gate Check","一鍵流程中止：前一步未成功");
-  setAuto(false)}
+  while(ok&&!stopRef.current){
+    let n=0,pass=false;
+    while(!stopRef.current){
+      n++;setAutoStep("Builder"+(n>1?" · 重做 "+(n-1):""));
+      if(!(await runBuilder())){ok=false;break}
+      await sleep(150);if(stopRef.current)break;
+      setAutoStep("Evaluator"+(n>1?" · 第 "+n+" 輪":""));pass=await runEval();await sleep(150);
+      if(pass)break;
+      if(evalRes.current!=="fail"){ok=false;break}
+      if(!cf.retry){ok=false;why="驗收未通過，請查看 QA 報告，修正後再按 2 與 3（或到設定開啟「未過自動重做」）";break}
+      L("Harness Gate Check","自動重做：第 "+n+" 輪驗收未通過，帶 QA 報告回 Builder 修正後再驗收")}
+    if(!pass)break;
+    done++;
+    if(stopRef.current)break;
+    if(!cf.next){L("Harness Gate Check","一鍵流程完成：任務已通過驗收");break}
+    if(!todo()){L("Harness Gate Check","全部完成：待辦已清空，本次共通過 "+done+" 張");break}
+    L("Harness Gate Check","自動接續：領取下一張待辦（已通過 "+done+" 張）")}
+  if(stopRef.current)L("Harness Gate Check","一鍵流程已停止（本次通過 "+done+" 張）");
+  else if(!ok)L("Harness Gate Check","一鍵流程中止："+why);
+  setAuto(false);setAutoStep("")}
 function handoff(){
   const a=SR.current.features.find(f=>f.status==="active");
   addProgress("## 交接 "+new Date().toLocaleString()+"\n- Active："+(a?a.id+" "+a.title+"（steps "+(a.steps||0)+"）":"無")+"\n- 本 Session 估算 tokens："+sess.tokens+"\n- 最後事件："+(log.slice(-2).map(x=>x.tag).join(" → ")||"無")+"\n- 下一步："+(a?"繼續 Builder／Evaluator":"領取下一張票"));
@@ -211,13 +229,13 @@ return <div className="h-full relative flex text-[13px]">
    {busy&&<div className="text-zinc-500 animate-pulse pl-5">處理中…</div>}<div ref={endRef}/></div>
  </div>}
  {view==="board"&&<div className="p-4 grid grid-cols-4 gap-3 items-start min-w-[760px]">{COLS.map(([k,n])=><div key={k} className="space-y-2">
-   <div className="flex items-center gap-2 px-1"><span className={"w-1.5 h-1.5 rounded-full "+DOT[k]}/><span className={lbl}>{n}</span><span className="mono text-[11px] text-zinc-600">{S.features.filter(f=>f.status===k).length}{k==="active"?"/1":""}</span></div>
+   <div className="flex items-center gap-2 px-1"><span className={"w-1.5 h-1.5 rounded-full "+DOT[k]}/><span className={lbl}>{n}</span>{k==="not_started"&&S.cfg.auto&&S.cfg.auto.next&&<span className="text-[10px] text-indigo-300">自動接續</span>}<span className="mono text-[11px] text-zinc-600">{S.features.filter(f=>f.status===k).length}{k==="active"?"/1":""}</span></div>
    {S.features.filter(f=>f.status===k).map(fcard)}</div>)}</div>}
  {view==="files"&&<div className="p-4 h-full flex flex-col gap-2"><div className="flex items-center"><span className="mono text-[12px] text-zinc-400">{FILES.find(f=>f[0]===tab)[1]}</span>{tab==="feature_list"&&<button onClick={saveRaw} className="ml-auto px-3 py-1.5 rounded-lg bg-indigo-500 text-white">儲存（經護欄驗證）</button>}</div>
   {tab==="feature_list"?<textarea value={raw} onChange={e=>setRaw(e.target.value)} className={inp+" flex-1 mono text-[12px] leading-relaxed"}/>:<textarea value={S.files[tab]} onChange={e=>setFiles(tab,e.target.value)} className={inp+" flex-1 mono text-[12px] leading-relaxed"}/>}</div>}
  </div>
  <footer className="p-3 border-t border-[#1f1f23] space-y-2">
-  <div className="flex gap-2"><input value={req} onChange={e=>setReq(e.target.value)} className={inp} placeholder="輸入需求（給 Planner）"/><button disabled={busy||auto} onClick={runAll} className="shrink-0 pl-4 pr-5 py-2.5 rounded-xl text-white font-medium disabled:opacity-70 flex items-center gap-2.5 border border-indigo-300/30 active:scale-[0.98] transition" style={{background:"linear-gradient(180deg,#6366f1,#4f46e5)",boxShadow:"0 8px 24px -10px rgba(99,102,241,.7), inset 0 1px 0 rgba(255,255,255,.18)"}}>{auto?<span className="w-2 h-2 rounded-full bg-white animate-pulse"/>:<svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1.2v9.6L10.8 6z" fill="currentColor"/></svg>}<span className="whitespace-nowrap">{auto?"執行中 · "+autoStep:"任務開始"}</span></button></div>
+  <div className="flex gap-2"><input value={req} onChange={e=>setReq(e.target.value)} className={inp} placeholder="輸入需求（給 Planner）"/>{auto&&<button onClick={()=>{stopRef.current=true;L("Harness Gate Check","收到停止指令：將在目前這一步結束後停止")}} className="shrink-0 px-4 py-2.5 rounded-xl border border-rose-400/40 text-rose-300">停止</button>}<button disabled={busy||auto} onClick={runAll} className="shrink-0 pl-4 pr-5 py-2.5 rounded-xl text-white font-medium disabled:opacity-70 flex items-center gap-2.5 border border-indigo-300/30 active:scale-[0.98] transition" style={{background:"linear-gradient(180deg,#6366f1,#4f46e5)",boxShadow:"0 8px 24px -10px rgba(99,102,241,.7), inset 0 1px 0 rgba(255,255,255,.18)"}}>{auto?<span className="w-2 h-2 rounded-full bg-white animate-pulse"/>:<svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1.2v9.6L10.8 6z" fill="currentColor"/></svg>}<span className="whitespace-nowrap">{auto?"執行中 · "+autoStep:"任務開始"}</span></button></div>
   <div className="grid grid-cols-4 gap-2">
    <Btn n="1" t="Planner" s="拆解需求至 feature_list" c="bg-violet-500/20 text-violet-300" fn={runPlanner}/>
    <Btn n="2" t="Builder" s="領取並執行唯一 Active 任務" c="bg-indigo-500/20 text-indigo-300" fn={runBuilder}/>
@@ -228,6 +246,8 @@ return <div className="h-full relative flex text-[13px]">
 {right&&<aside className="absolute inset-y-0 right-0 z-40 w-80 max-w-full shadow-2xl border-l border-[#1f1f23] bg-[#0c0c0e] overflow-auto p-4 space-y-5">
  <div className="flex items-center"><span className="font-semibold">模型路由</span><button onClick={()=>setRight(false)} className="ml-auto px-2 text-zinc-400">關閉</button></div>
  <div className="flex bg-[#111113] border border-[#1f1f23] rounded-lg p-0.5">{[["standalone","獨立模式"],["bridge","橋接模式"]].map(([k,n])=><button key={k} onClick={()=>setCfg(c=>{c.mode=k;Object.keys(c.roles).forEach(r=>{c.roles[r].provider=k==="bridge"?"subscription_bridge":"gemini_api"})})} className={"flex-1 py-1.5 rounded-md "+(S.cfg.mode===k?"bg-[#27272a] text-zinc-100":"text-zinc-400")}>{n}</button>)}</div>
+ <div className="space-y-2"><div className={lbl}>自動化（作用於「任務開始」）</div>
+ {[["next","通過後自動接續下一張待辦","Evaluator PASS 後自動領取下一張，繼續 Builder → Evaluator，直到待辦清空"],["retry","驗收未過自動重做再驗收","FAIL 時帶 QA 報告回 Builder 修正再驗，直到 PASS；仍受每任務 25 步熔斷限制"]].map(([k,t,d])=><label key={k} className={card+" p-2.5 flex items-start gap-2.5"}><input type="checkbox" className="mt-0.5" checked={!!(S.cfg.auto&&S.cfg.auto[k])} onChange={e=>setCfg(c=>{c.auto=c.auto||{};c.auto[k]=e.target.checked})}/><span><span className="block text-zinc-200">{t}</span><span className="block text-[11px] text-zinc-500 mt-0.5 leading-snug">{d}</span></span></label>)}</div>
  <div className="space-y-2"><div className={lbl}>gemini_api · Key 僅存本機</div><input type="password" placeholder="GEMINI_API_KEY" value={S.cfg.providers.gemini.key} onChange={e=>setCfg(c=>{c.providers.gemini.key=e.target.value})} className={inp}/></div>
  <div className="space-y-2"><div className={lbl}>openai_compatible</div><input placeholder="base_url" value={S.cfg.providers.openai.url} onChange={e=>setCfg(c=>{c.providers.openai.url=e.target.value})} className={inp}/><input type="password" placeholder="api_key" value={S.cfg.providers.openai.key} onChange={e=>setCfg(c=>{c.providers.openai.key=e.target.value})} className={inp}/></div>
  <div className="space-y-2"><div className={lbl}>subscription_bridge</div><input placeholder="http://100.x.x.x:8321/v1" value={S.cfg.providers.bridge.url} onChange={e=>setCfg(c=>{c.providers.bridge.url=e.target.value})} className={inp}/><input placeholder='Headers JSON' value={S.cfg.providers.bridge.headers} onChange={e=>setCfg(c=>{c.providers.bridge.headers=e.target.value})} className={inp}/>
