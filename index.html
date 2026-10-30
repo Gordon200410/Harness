@@ -11,7 +11,7 @@
 </head><body><div id="root"></div>
 <script type="text/babel">
 const {useState,useEffect,useRef}=React;
-const CAP=25,KEY="harness_v1";
+const CAP=25,KEY="harness_v1";const GM=["gemini-4-argon","gemini-3.8-flash","gemini-3.5-flash-lite"],GMAP={"gemini-2.5-pro":"gemini-4-argon","gemini-2.5-flash":"gemini-3.8-flash"};
 const SYS={
 Planner:"你是 Planner。只負責規格與拆票，不寫實作。輸出 JSON 陣列：[{\"title\":\"…\",\"acceptance\":\"…\"}]，每張票必須小到可單一 Session 完成。",
 Builder:"你是 Builder。一次只處理唯一的 Active 任務，輸出實作方案或程式碼與自我檢查清單。禁止宣稱任務已通過，驗收權在 Evaluator。",
@@ -29,8 +29,8 @@ const SPEC0=`# SPEC.md
 const DEF={files:{agents:AGENTS0,spec:SPEC0,progress:"# progress.md\n（交接日誌）\n",decisions:"# DECISIONS.md\n- ADR-001：狀態存 localStorage，可匯出 JSON。\n"},
 features:[],
 cfg:{providers:{gemini:{key:"",key2:""},openai:{url:"https://openrouter.ai/api/v1",key:"",headers:"{}"},bridge:{url:"http://100.x.x.x:8321/v1",key:"",headers:"{}",sticky:true}},
-roles:{Planner:{provider:"gemini_api",model:"gemini-2.5-pro"},Builder:{provider:"gemini_api",model:"gemini-2.5-flash",keySlot:"1"},Evaluator:{provider:"gemini_api",model:"gemini-2.5-pro"}},mode:"standalone"}};
-function load(){try{const s=localStorage.getItem(KEY);if(s)return JSON.parse(s)}catch(e){}return JSON.parse(JSON.stringify(DEF))}
+roles:{Planner:{provider:"gemini_api",model:"gemini-4-argon"},Builder:{provider:"gemini_api",model:"gemini-3.8-flash",keySlot:"1"},Evaluator:{provider:"gemini_api",model:"gemini-4-argon"}},mode:"standalone"}};
+function load(){try{const s=localStorage.getItem(KEY);if(s){const j=JSON.parse(s);try{Object.values(j.cfg.roles).forEach(r=>{if(r.provider==="gemini_api"&&GMAP[r.model])r.model=GMAP[r.model]})}catch(e){}return j}}catch(e){}return JSON.parse(JSON.stringify(DEF))}
 const DOT={not_started:"bg-zinc-500",active:"bg-indigo-400",passing:"bg-emerald-400",blocked:"bg-rose-400"};
 const TAGDOT={"Context Injected":"bg-sky-400","Model Proposes":"bg-violet-400","Harness Gate Check":"bg-amber-400","QA Verification":"bg-emerald-400"};
 const COLS=[["not_started","待辦"],["active","進行中"],["blocked","封鎖"],["passing","已通過"]];
@@ -255,7 +255,7 @@ return <div className="h-full relative flex text-[14px]">
  <div className="space-y-2"><div className={lbl}>Role routing</div><datalist id="models"><option value="gemini-2.5-pro"/><option value="gemini-2.5-flash"/></datalist>
   {["Planner","Builder","Evaluator"].map(r=><div key={r} className={card+" p-2.5 space-y-1.5"}><div className="text-zinc-300">{r}</div>
    <select value={S.cfg.roles[r].provider} onChange={e=>setCfg(c=>{c.roles[r].provider=e.target.value})} className={inp}><option>gemini_api</option><option>openai_compatible</option><option>subscription_bridge</option></select>
-   <input list="models" value={S.cfg.roles[r].model} onChange={e=>setCfg(c=>{c.roles[r].model=e.target.value})} className={inp+" mono"}/>
+   {S.cfg.roles[r].provider==="gemini_api"?<select value={S.cfg.roles[r].model} onChange={e=>setCfg(c=>{c.roles[r].model=e.target.value})} className={inp+" mono"}>{(GM.includes(S.cfg.roles[r].model)?GM:[S.cfg.roles[r].model,...GM]).map(m=><option key={m} value={m}>{m}</option>)}</select>:<input list="models" value={S.cfg.roles[r].model} onChange={e=>setCfg(c=>{c.roles[r].model=e.target.value})} className={inp+" mono"}/>}
    {S.cfg.roles[r].provider==="gemini_api"&&<div className="flex items-center gap-2"><span className={lbl+" shrink-0"}>API Key</span><div className="flex flex-1 bg-[#111113] border border-[#1f1f23] rounded-lg p-0.5">{[["1","Key A"],["2","Key B"]].map(([v,n])=><button key={v} onClick={()=>setCfg(c=>{c.roles[r].keySlot=v})} className={"flex-1 py-2 rounded-md "+((S.cfg.roles[r].keySlot||"1")===v?"bg-[#27272a] text-zinc-100":"text-zinc-400")}>{n}{v==="2"&&!S.cfg.providers.gemini.key2?"（未填）":""}</button>)}</div></div>}
    <div className="flex items-center gap-2 pt-0.5"><span className={lbl+" shrink-0"}>思考程度</span><select value={S.cfg.roles[r].think||""} onChange={e=>setCfg(c=>{c.roles[r].think=e.target.value})} className={inp}><option value="">模型預設</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></div></div>)}</div>
  <div className="space-y-2"><div className="flex items-center gap-1"><span className={lbl+" mr-auto"}>Context 預覽</span>{["Planner","Builder","Evaluator"].map(r=><button key={r} onClick={()=>setPv(r)} className={"px-3 py-2 rounded-md text-[12px] "+(pv===r?"bg-[#27272a] text-zinc-100":"text-zinc-500")}>{r}</button>)}</div>
